@@ -1,0 +1,21 @@
+{
+  "name": "ruhunu-products-billing-suite",
+  "version": "3.5.0",
+  "description": "RUHUNU PRODUCTS Billing Suite - Invoicing, Inventory & Accounts System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "billing",
+    "invoicing",
+    "sqlite",
+    "accounting"
+  ],
+  "author": "Ruhunu Products",
+  "license": "ISC"
+}

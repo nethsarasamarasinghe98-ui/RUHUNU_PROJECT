@@ -2,15 +2,25 @@ const { createApp } = Vue;
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
-// Use relative URL on any live web hosting / domain (HTTP/HTTPS); fallback to localhost:3000 only when opened as file:///
-const API_URL = (typeof window !== 'undefined' && window.location.protocol.startsWith('http'))
-    ? ''
-    : 'http://localhost:3000';
+// Smart base URL: automatically handles root domains, subdirectories/subfolders on live web hosts, and localhost fallback
+function getBaseUrl() {
+    if (typeof window === 'undefined' || !window.location.protocol.startsWith('http')) {
+        return 'http://localhost:3000';
+    }
+    const pathname = window.location.pathname;
+    const dir = pathname.substring(0, pathname.lastIndexOf('/') + 1);
+    return window.location.origin + dir;
+}
+const API_URL = getBaseUrl();
 
 createApp({
     data() {
         return {
             dbConnected: false,
+            dbEngine: 'Detecting...',
+            dbTestResult: '',
+            dbIsTesting: false,
+            dbModalOpen: false,
             isSaving: false,
             isLoggedIn: false,
             currentUser: null,
@@ -1004,24 +1014,27 @@ createApp({
             }
         },
         async apiRequest(path, options = {}) {
+            const cleanPath = path.replace(/^\/+/, '');
+            const baseUrl = API_URL.endsWith('/') ? API_URL : `${API_URL}/`;
+            const url = `${baseUrl}${cleanPath}`;
+
             try {
-                const url = `${API_URL}${path}`;
                 let res = await fetch(url, options);
                 if (res.ok) return res;
 
-                // Fallback for live PHP hosts without rewrite rules
-                if ((res.status === 404 || !res.ok) && path.startsWith('/api/')) {
-                    const route = path.replace('/api/', '');
-                    const fallbackUrl = `${API_URL}/api.php?route=${encodeURIComponent(route)}`;
+                // Fallback for live PHP hosts (cPanel/Apache/Nginx) where rewrite rules might not be active
+                if (cleanPath.startsWith('api/')) {
+                    const route = cleanPath.replace(/^api\//, '');
+                    const fallbackUrl = `${baseUrl}api.php?route=${encodeURIComponent(route)}`;
                     const fallbackRes = await fetch(fallbackUrl, options);
                     if (fallbackRes.ok) return fallbackRes;
                 }
                 return res;
             } catch (err) {
-                if (path.startsWith('/api/')) {
-                    const route = path.replace('/api/', '');
+                if (cleanPath.startsWith('api/')) {
+                    const route = cleanPath.replace(/^api\//, '');
                     try {
-                        const fallbackUrl = `${API_URL}/api.php?route=${encodeURIComponent(route)}`;
+                        const fallbackUrl = `${baseUrl}api.php?route=${encodeURIComponent(route)}`;
                         return await fetch(fallbackUrl, options);
                     } catch (e) {}
                 }
@@ -1051,11 +1064,29 @@ createApp({
                     if (data.userSessions && Array.isArray(data.userSessions)) this.userSessions = data.userSessions;
                     this.dbConnected = true;
                     this.saveToLocalStorage();
+                    this.checkDbEngine();
                 } else {
                     this.dbConnected = false;
                 }
             } catch (e) {
                 this.dbConnected = false;
+            }
+
+            // 3. Fallback for static hosting / initial database seed from database.json
+            if (!this.dbConnected && (!this.invoices || this.invoices.length === 0)) {
+                try {
+                    const baseUrl = API_URL.endsWith('/') ? API_URL : `${API_URL}/`;
+                    const jRes = await fetch(`${baseUrl}database.json`);
+                    if (jRes && jRes.ok) {
+                        const jData = await jRes.json();
+                        if (jData.products && (!this.products || this.products.length === 0)) this.products = jData.products;
+                        if (jData.customers && (!this.customers || this.customers.length === 0)) this.customers = jData.customers;
+                        if (jData.invoices && (!this.invoices || this.invoices.length === 0)) this.invoices = jData.invoices;
+                        if (jData.settings) this.settings = { ...this.settings, ...jData.settings };
+                        if (jData.users && Array.isArray(jData.users)) this.users = jData.users;
+                        this.saveToLocalStorage();
+                    }
+                } catch (eJson) {}
             }
 
             // Restore user session ONLY from sessionStorage (automatically logs out when closed)
@@ -1101,6 +1132,104 @@ createApp({
             } finally {
                 setTimeout(() => { this.isSaving = false; }, 300);
             }
+        },
+        async checkDbEngine() {
+            try {
+                const res = await this.apiRequest('/api/status');
+                if (res && res.ok) {
+                    const data = await res.json();
+                    this.dbEngine = data.database || data.engine || 'Connected';
+                    this.dbConnected = true;
+                } else {
+                    this.dbEngine = 'Local Storage (Browser Cache)';
+                }
+            } catch (e) {
+                this.dbEngine = 'Local Storage (Browser Cache)';
+            }
+        },
+        async testDbConnection() {
+            this.dbIsTesting = true;
+            this.dbTestResult = 'Testing connection to database...';
+            try {
+                const t0 = performance.now();
+                const res = await this.apiRequest('/api/status');
+                const t1 = performance.now();
+                const ms = Math.round(t1 - t0);
+                if (res && res.ok) {
+                    const data = await res.json();
+                    this.dbEngine = data.database || data.engine || 'Connected';
+                    this.dbConnected = true;
+                    this.dbTestResult = `Connected! Engine: ${this.dbEngine} (${ms}ms response)`;
+                    this.showToast(`Database Connected: ${this.dbEngine}`, 'success');
+                } else {
+                    this.dbTestResult = `Server response HTTP ${res.status}. Auto-saving to Local Storage.`;
+                    this.showToast(`Server status: HTTP ${res.status}`, 'warning');
+                }
+            } catch (e) {
+                this.dbTestResult = `Server offline or static host (${e.message}). Data is safely saved in your browser LocalStorage.`;
+                this.showToast('Server offline - using LocalStorage', 'info');
+            } finally {
+                this.dbIsTesting = false;
+            }
+        },
+        exportDatabaseBackup() {
+            const backup = {
+                exportedAt: new Date().toISOString(),
+                system: 'RUHUNU PRODUCTS Billing Suite',
+                version: '3.6.0',
+                users: this.users,
+                settings: this.settings,
+                products: this.products,
+                customers: this.customers,
+                invoices: this.invoices,
+                history: this.history,
+                userSessions: this.userSessions
+            };
+            const str = JSON.stringify(backup, null, 2);
+            const blob = new Blob([str], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const now = new Date();
+            const dateStr = now.toISOString().slice(0, 10);
+            a.href = url;
+            a.download = `ruhunubilling_database_backup_${dateStr}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.showToast('Database backup downloaded successfully!', 'success');
+        },
+        importDatabaseBackup(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (!data || typeof data !== 'object') throw new Error('Invalid JSON backup file');
+                    if (data.users && Array.isArray(data.users)) this.users = data.users;
+                    if (data.settings && typeof data.settings === 'object') this.settings = { ...this.settings, ...data.settings };
+                    if (data.products && Array.isArray(data.products)) this.products = data.products;
+                    if (data.customers && Array.isArray(data.customers)) this.customers = data.customers;
+                    if (data.invoices && Array.isArray(data.invoices)) this.invoices = data.invoices;
+                    if (data.history && Array.isArray(data.history)) this.history = data.history;
+                    if (data.userSessions && Array.isArray(data.userSessions)) this.userSessions = data.userSessions;
+                    await this.saveData();
+                    this.showToast('Database restored successfully from backup file!', 'success');
+                    this.closeDbModal();
+                } catch (err) {
+                    this.showToast('Failed to import backup: ' + err.message, 'error');
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        },
+        openDbModal() {
+            this.dbModalOpen = true;
+            this.testDbConnection();
+        },
+        closeDbModal() {
+            this.dbModalOpen = false;
         },
         logHistory(action, details) {
             this.history.unshift({

@@ -1,7 +1,8 @@
 <?php
 // ============================================================
 // Live Web Hosting REST API for RUHUNU PRODUCTS Billing Suite
-// Works on any shared hosting / cPanel / Apache / Nginx with MySQL
+// Multi-Engine: SQLite (Zero-Config Default) | MySQL | JSON Fallback
+// Works automatically on any shared hosting / cPanel / Apache / Nginx / PHP
 // ============================================================
 
 header('Content-Type: application/json; charset=utf-8');
@@ -16,8 +17,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once __DIR__ . '/db_config.php';
 $pdo = getDbConnection();
+$engine = getDbEngine();
 
-// Determine route
+// Determine requested route
 $route = $_GET['route'] ?? '';
 if (empty($route)) {
     $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -35,31 +37,74 @@ function getJsonInput() {
     return !empty($raw) ? json_decode($raw, true) : [];
 }
 
+// Helper: Backup to database.json as human-readable backup
+function syncToJson($data) {
+    $jsonPath = __DIR__ . '/database.json';
+    try {
+        @file_put_contents($jsonPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    } catch (Exception $e) {}
+}
+
+// Helper: Read from database.json
+function readFromJson() {
+    $jsonPath = __DIR__ . '/database.json';
+    if (file_exists($jsonPath)) {
+        $raw = file_get_contents($jsonPath);
+        $data = json_decode($raw, true);
+        if (is_array($data)) return $data;
+    }
+    return [
+        'users' => [
+            ['id' => 'usr_admin_001', 'username' => 'admin', 'password' => 'password', 'role' => 'admin'],
+            ['id' => 'usr_user_002', 'username' => 'user', 'password' => 'password', 'role' => 'user']
+        ],
+        'settings' => ['companyName' => 'RUHUNU PRODUCTS'],
+        'products' => [],
+        'customers' => [],
+        'invoices' => [],
+        'history' => [],
+        'userSessions' => []
+    ];
+}
+
 try {
     // ----------------------------------------------------
-    // GET status
+    // GET /api/status
     // ----------------------------------------------------
     if ($route === 'status' && $method === 'GET') {
-        echo json_encode(['status' => 'ok', 'database' => 'MySQL Live Connected', 'time' => date('c')]);
+        echo json_encode([
+            'status' => 'ok',
+            'engine' => $engine,
+            'database' => $engine === 'sqlite' ? 'SQLite (database.sqlite)' : ($engine === 'mysql' ? 'MySQL Live' : 'JSON File Storage'),
+            'time' => date('c')
+        ]);
         exit;
     }
 
     // ----------------------------------------------------
-    // GET data (Full Data Load)
+    // GET /api/data (Full Data Load)
     // ----------------------------------------------------
     if (($route === 'data' || empty($route)) && $method === 'GET') {
-        // Users
-        $users = $pdo->query("SELECT id, username, password, role FROM users")->fetchAll();
-        if (empty($users)) {
-            $pdo->exec("INSERT INTO users (id, username, password, role) VALUES ('usr_admin_001', 'admin', 'password', 'admin'), ('usr_user_002', 'user', 'password', 'user')");
-            $users = $pdo->query("SELECT id, username, password, role FROM users")->fetchAll();
+        if ($engine === 'json' || !$pdo) {
+            $jsonData = readFromJson();
+            echo json_encode($jsonData);
+            exit;
         }
 
-        // Settings
+        // 1. Users
+        $users = $pdo->query("SELECT id, username, password, role FROM users ORDER BY id ASC")->fetchAll();
+        if (empty($users)) {
+            $pdo->exec("INSERT INTO users (id, username, password, role) VALUES ('usr_admin_001', 'admin', 'password', 'admin'), ('usr_user_002', 'user', 'password', 'user')");
+            $users = $pdo->query("SELECT id, username, password, role FROM users ORDER BY id ASC")->fetchAll();
+        }
+
+        // 2. Settings
         $sRow = $pdo->query("SELECT * FROM settings WHERE id = 1")->fetch() ?: [];
         $settings = [
             'companyName' => $sRow['company_name'] ?? 'RUHUNU PRODUCTS',
-            'logo' => $sRow['logo'] ?? '',
+            'sidebarSubtitle' => $sRow['sidebar_subtitle'] ?? 'Billing Suite',
+            'logo' => $sRow['logo'] ?? 'ruhunu_logo.svg',
+            'logoAnimated' => isset($sRow['logo_animated']) ? (bool)$sRow['logo_animated'] : true,
             'address' => '',
             'addressLine1' => $sRow['address_line1'] ?? '',
             'addressLine2' => $sRow['address_line2'] ?? '',
@@ -93,18 +138,62 @@ try {
             ],
             'invoiceNumberingMode' => $sRow['invoice_numbering_mode'] ?? 'auto',
             'autoStartNumber' => isset($sRow['auto_start_number']) ? (int)$sRow['auto_start_number'] : 1,
+            'notificationsEnabled' => isset($sRow['notifications_enabled']) ? (bool)$sRow['notifications_enabled'] : true,
+            'sealEnabled' => isset($sRow['seal_enabled']) ? (bool)$sRow['seal_enabled'] : true,
+            'sealImage' => $sRow['seal_image'] ?? 'paid_stamp.png',
+            'sealPosition' => $sRow['seal_position'] ?? 'top-right',
+            'sealTop' => isset($sRow['seal_top']) ? (int)$sRow['seal_top'] : 16,
+            'sealLeft' => isset($sRow['seal_left']) ? (int)$sRow['seal_left'] : 72,
+            'sealRotation' => isset($sRow['seal_rotation']) ? (int)$sRow['seal_rotation'] : -15,
+            'sealSize' => isset($sRow['seal_size']) ? (int)$sRow['seal_size'] : 150,
+            'sealOpacity' => isset($sRow['seal_opacity']) ? (int)$sRow['seal_opacity'] : 88,
+            'autoFitOnePage' => isset($sRow['auto_fit_one_page']) ? (bool)$sRow['auto_fit_one_page'] : true,
+            'hideBankWhenPayments' => isset($sRow['hide_bank_when_payments']) ? (bool)$sRow['hide_bank_when_payments'] : false,
+            'bottomStampText' => $sRow['bottom_stamp_text'] ?? 'Generated by {companyName}',
+            'footerHorizontalAlign' => $sRow['footer_horizontal_align'] ?? 'space-between',
+            'footerVerticalOffset' => isset($sRow['footer_vertical_offset']) ? (int)$sRow['footer_vertical_offset'] : 0,
+            'footerHorizontalOffset' => isset($sRow['footer_horizontal_offset']) ? (int)$sRow['footer_horizontal_offset'] : 0,
+            'footerShowDivider' => isset($sRow['footer_show_divider']) ? (bool)$sRow['footer_show_divider'] : true,
+            'footerShowInvoiceNumber' => isset($sRow['footer_show_invoice_number']) ? (bool)$sRow['footer_show_invoice_number'] : true,
+            'footerFontSize' => isset($sRow['footer_font_size']) ? (int)$sRow['footer_font_size'] : 11,
         ];
 
-        // Products
-        $products = $pdo->query("SELECT id, code, name, CAST(price AS DECIMAL(10,2)) as price FROM products ORDER BY name ASC")->fetchAll();
-        foreach ($products as &$p) { $p['price'] = (float)$p['price']; }
+        // 3. Products
+        $pRows = $pdo->query("SELECT id, code, name, price, COALESCE(brand, '') as brand FROM products ORDER BY name ASC")->fetchAll();
+        $products = array_map(function($p) {
+            return [
+                'id' => $p['id'],
+                'code' => $p['code'] ?? '',
+                'name' => $p['name'],
+                'brand' => $p['brand'] ?? '',
+                'price' => (float)$p['price']
+            ];
+        }, $pRows);
 
-        // Customers
+        // 4. Customers
         $cRows = $pdo->query("SELECT id, name, phone, email, address_line1 as addressLine1, address_line2 as addressLine2 FROM customers ORDER BY name ASC")->fetchAll();
+        $customers = array_map(function($c) {
+            return [
+                'id' => $c['id'],
+                'name' => $c['name'],
+                'phone' => $c['phone'] ?? '',
+                'email' => $c['email'] ?? '',
+                'addressLine1' => $c['addressLine1'] ?? '',
+                'addressLine2' => $c['addressLine2'] ?? '',
+            ];
+        }, $cRows);
 
-        // Invoices with items
+        // 5. Invoices with items & multiple payment records
         $iRows = $pdo->query("SELECT * FROM invoices ORDER BY date DESC")->fetchAll();
-        $itemStmt = $pdo->prepare("SELECT product_id as productId, description, qty, price FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC");
+        $itemStmt = $pdo->prepare("SELECT product_id as productId, description, COALESCE(brand, '') as brand, COALESCE(show_brand, 0) as showBrand, qty, price FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC");
+        
+        $hasPaymentsTable = true;
+        try {
+            $paymentStmt = $pdo->prepare("SELECT id, amount, date, method, note FROM invoice_payments WHERE invoice_id = ? ORDER BY date ASC, id ASC");
+        } catch (Exception $e) {
+            $hasPaymentsTable = false;
+        }
+
         $invoices = [];
         foreach ($iRows as $inv) {
             $itemStmt->execute([$inv['id']]);
@@ -113,10 +202,38 @@ try {
                 return [
                     'productId' => $it['productId'] ?: '',
                     'description' => $it['description'] ?: '',
+                    'brand' => $it['brand'] ?: '',
+                    'showBrand' => (bool)$it['showBrand'],
                     'qty' => (float)$it['qty'],
                     'price' => (float)$it['price'],
                 ];
             }, $rawItems);
+
+            $payments = [];
+            if ($hasPaymentsTable) {
+                try {
+                    $paymentStmt->execute([$inv['id']]);
+                    $rawPayments = $paymentStmt->fetchAll();
+                    $payments = array_map(function($p) {
+                        return [
+                            'id' => $p['id'],
+                            'amount' => (float)$p['amount'],
+                            'date' => $p['date'],
+                            'method' => $p['method'] ?: 'Cash',
+                            'note' => $p['note'] ?: ''
+                        ];
+                    }, $rawPayments);
+                } catch (Exception $e) {}
+            }
+            if (empty($payments) && (float)$inv['amount_paid'] > 0) {
+                $payments = [[
+                    'id' => 'p_init_' . substr(md5($inv['id']), 0, 8),
+                    'amount' => (float)$inv['amount_paid'],
+                    'date' => $inv['date'],
+                    'method' => 'Cash',
+                    'note' => 'Initial payment'
+                ]];
+            }
 
             $invoices[] = [
                 'id' => $inv['id'],
@@ -133,80 +250,151 @@ try {
                 'status' => $inv['status'] ?: 'Unpaid',
                 'manualInvoiceNumber' => $inv['manual_invoice_number'] ?: '',
                 'items' => $items,
+                'payments' => $payments,
             ];
         }
 
-        // History
-        $history = $pdo->query("SELECT id, action, details, user, date FROM activity_history ORDER BY date DESC LIMIT 500")->fetchAll();
+        // 6. History
+        $history = $pdo->query("SELECT id, action, details, user, date FROM activity_history ORDER BY date DESC LIMIT 200")->fetchAll();
 
-        echo json_encode([
+        // 7. User Sessions
+        $userSessions = [];
+        try {
+            $userSessions = $pdo->query("SELECT id, user_id as userId, username, login_time as loginTime, logout_time as logoutTime, duration_seconds as durationSeconds, is_online as isOnline, device FROM user_sessions ORDER BY login_time DESC LIMIT 100")->fetchAll();
+        } catch (Exception $e) {}
+
+        $fullPayload = [
             'users' => $users,
             'settings' => $settings,
             'products' => $products,
-            'customers' => $cRows,
+            'customers' => $customers,
             'invoices' => $invoices,
-            'history' => $history
-        ]);
+            'history' => $history,
+            'userSessions' => $userSessions
+        ];
+
+        syncToJson($fullPayload);
+        echo json_encode($fullPayload);
         exit;
     }
 
     // ----------------------------------------------------
-    // POST /api/sync (Full / Real-Time Sync)
+    // POST /api/sync (Full Real-Time Synchronization)
     // ----------------------------------------------------
     if ($route === 'sync' && $method === 'POST') {
         $body = getJsonInput();
+        if (empty($body)) {
+            echo json_encode(['success' => false, 'error' => 'No JSON payload provided']);
+            exit;
+        }
 
-        $pdo->beginTransaction();
+        if ($engine === 'json' || !$pdo) {
+            syncToJson($body);
+            echo json_encode(['success' => true, 'engine' => 'json', 'message' => 'Synced to database.json backup successfully']);
+            exit;
+        }
+
+        $isSqlite = ($engine === 'sqlite');
 
         // 1. Settings
         if (!empty($body['settings'])) {
             $s = $body['settings'];
             $b = $s['bankDetails'] ?? [];
             $m = $s['margins'] ?? [];
-            $stmt = $pdo->prepare("
-                INSERT INTO settings (
-                    id, company_name, logo, address_line1, address_line2, phone, mobile_number,
-                    whatsapp_number, email, footer_note, terms_info, bank_name, account_name,
-                    account_number, branch_name, bank_details_position, theme, header_color,
-                    logo_size, watermark_image, watermark_size, watermark_opacity, logo_position,
-                    company_details_alignment, empty_rows_count, margin_top, margin_right,
-                    margin_bottom, margin_left, invoice_numbering_mode, auto_start_number
-                ) VALUES (
-                    1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                ) ON DUPLICATE KEY UPDATE
-                    company_name = VALUES(company_name),
-                    logo = VALUES(logo),
-                    address_line1 = VALUES(address_line1),
-                    address_line2 = VALUES(address_line2),
-                    phone = VALUES(phone),
-                    mobile_number = VALUES(mobile_number),
-                    whatsapp_number = VALUES(whatsapp_number),
-                    email = VALUES(email),
-                    footer_note = VALUES(footer_note),
-                    terms_info = VALUES(terms_info),
-                    bank_name = VALUES(bank_name),
-                    account_name = VALUES(account_name),
-                    account_number = VALUES(account_number),
-                    branch_name = VALUES(branch_name),
-                    bank_details_position = VALUES(bank_details_position),
-                    theme = VALUES(theme),
-                    header_color = VALUES(header_color),
-                    logo_size = VALUES(logo_size),
-                    watermark_image = VALUES(watermark_image),
-                    watermark_size = VALUES(watermark_size),
-                    watermark_opacity = VALUES(watermark_opacity),
-                    logo_position = VALUES(logo_position),
-                    company_details_alignment = VALUES(company_details_alignment),
-                    empty_rows_count = VALUES(empty_rows_count),
-                    margin_top = VALUES(margin_top),
-                    margin_right = VALUES(margin_right),
-                    margin_bottom = VALUES(margin_bottom),
-                    margin_left = VALUES(margin_left),
-                    invoice_numbering_mode = VALUES(invoice_numbering_mode),
-                    auto_start_number = VALUES(auto_start_number)
-            ");
+
+            if ($isSqlite) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO settings (
+                        id, company_name, sidebar_subtitle, logo, address_line1, address_line2, phone, mobile_number,
+                        whatsapp_number, email, footer_note, terms_info, bank_name, account_name,
+                        account_number, branch_name, bank_details_position, theme, header_color,
+                        logo_size, watermark_image, watermark_size, watermark_opacity, logo_position,
+                        company_details_alignment, empty_rows_count, margin_top, margin_right,
+                        margin_bottom, margin_left, invoice_numbering_mode, auto_start_number,
+                        notifications_enabled, logo_animated, seal_enabled, seal_image,
+                        seal_position, seal_top, seal_left, seal_rotation, seal_size, seal_opacity,
+                        auto_fit_one_page, hide_bank_when_payments,
+                        bottom_stamp_text, footer_horizontal_align, footer_vertical_offset, footer_horizontal_offset,
+                        footer_show_divider, footer_show_invoice_number, footer_font_size, updated_at
+                    ) VALUES (
+                        1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT(id) DO UPDATE SET
+                        company_name = excluded.company_name,
+                        sidebar_subtitle = excluded.sidebar_subtitle,
+                        logo = excluded.logo,
+                        address_line1 = excluded.address_line1,
+                        address_line2 = excluded.address_line2,
+                        phone = excluded.phone,
+                        mobile_number = excluded.mobile_number,
+                        whatsapp_number = excluded.whatsapp_number,
+                        email = excluded.email,
+                        footer_note = excluded.footer_note,
+                        terms_info = excluded.terms_info,
+                        bank_name = excluded.bank_name,
+                        account_name = excluded.account_name,
+                        account_number = excluded.account_number,
+                        branch_name = excluded.branch_name,
+                        bank_details_position = excluded.bank_details_position,
+                        theme = excluded.theme,
+                        header_color = excluded.header_color,
+                        logo_size = excluded.logo_size,
+                        watermark_image = excluded.watermark_image,
+                        watermark_size = excluded.watermark_size,
+                        watermark_opacity = excluded.watermark_opacity,
+                        logo_position = excluded.logo_position,
+                        company_details_alignment = excluded.company_details_alignment,
+                        empty_rows_count = excluded.empty_rows_count,
+                        margin_top = excluded.margin_top,
+                        margin_right = excluded.margin_right,
+                        margin_bottom = excluded.margin_bottom,
+                        margin_left = excluded.margin_left,
+                        invoice_numbering_mode = excluded.invoice_numbering_mode,
+                        auto_start_number = excluded.auto_start_number,
+                        notifications_enabled = excluded.notifications_enabled,
+                        logo_animated = excluded.logo_animated,
+                        seal_enabled = excluded.seal_enabled,
+                        seal_image = excluded.seal_image,
+                        seal_position = excluded.seal_position,
+                        seal_top = excluded.seal_top,
+                        seal_left = excluded.seal_left,
+                        seal_rotation = excluded.seal_rotation,
+                        seal_size = excluded.seal_size,
+                        seal_opacity = excluded.seal_opacity,
+                        auto_fit_one_page = excluded.auto_fit_one_page,
+                        hide_bank_when_payments = excluded.hide_bank_when_payments,
+                        bottom_stamp_text = excluded.bottom_stamp_text,
+                        footer_horizontal_align = excluded.footer_horizontal_align,
+                        footer_vertical_offset = excluded.footer_vertical_offset,
+                        footer_horizontal_offset = excluded.footer_horizontal_offset,
+                        footer_show_divider = excluded.footer_show_divider,
+                        footer_show_invoice_number = excluded.footer_show_invoice_number,
+                        footer_font_size = excluded.footer_font_size,
+                        updated_at = CURRENT_TIMESTAMP
+                ");
+            } else {
+                $stmt = $pdo->prepare("
+                    REPLACE INTO settings (
+                        id, company_name, sidebar_subtitle, logo, address_line1, address_line2, phone, mobile_number,
+                        whatsapp_number, email, footer_note, terms_info, bank_name, account_name,
+                        account_number, branch_name, bank_details_position, theme, header_color,
+                        logo_size, watermark_image, watermark_size, watermark_opacity, logo_position,
+                        company_details_alignment, empty_rows_count, margin_top, margin_right,
+                        margin_bottom, margin_left, invoice_numbering_mode, auto_start_number,
+                        notifications_enabled, logo_animated, seal_enabled, seal_image,
+                        seal_position, seal_top, seal_left, seal_rotation, seal_size, seal_opacity,
+                        auto_fit_one_page, hide_bank_when_payments,
+                        bottom_stamp_text, footer_horizontal_align, footer_vertical_offset, footer_horizontal_offset,
+                        footer_show_divider, footer_show_invoice_number, footer_font_size
+                    ) VALUES (
+                        1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                ");
+            }
+
             $stmt->execute([
                 $s['companyName'] ?? 'RUHUNU PRODUCTS',
+                $s['sidebarSubtitle'] ?? 'Billing Suite',
                 $s['logo'] ?? '',
                 $s['addressLine1'] ?? '',
                 $s['addressLine2'] ?? '',
@@ -236,98 +424,120 @@ try {
                 (int)($m['left'] ?? 20),
                 $s['invoiceNumberingMode'] ?? 'auto',
                 (int)($s['autoStartNumber'] ?? 1),
+                !empty($s['notificationsEnabled']) ? 1 : 0,
+                !empty($s['logoAnimated']) ? 1 : 0,
+                !empty($s['sealEnabled']) ? 1 : 0,
+                $s['sealImage'] ?? 'paid_stamp.png',
+                $s['sealPosition'] ?? 'top-right',
+                isset($s['sealTop']) ? (int)$s['sealTop'] : 16,
+                isset($s['sealLeft']) ? (int)$s['sealLeft'] : 72,
+                isset($s['sealRotation']) ? (int)$s['sealRotation'] : -15,
+                isset($s['sealSize']) ? (int)$s['sealSize'] : 150,
+                isset($s['sealOpacity']) ? (int)$s['sealOpacity'] : 88,
+                !empty($s['autoFitOnePage']) ? 1 : 0,
+                !empty($s['hideBankWhenPayments']) ? 1 : 0,
+                $s['bottomStampText'] ?? 'Generated by {companyName}',
+                $s['footerHorizontalAlign'] ?? 'space-between',
+                isset($s['footerVerticalOffset']) ? (int)$s['footerVerticalOffset'] : 0,
+                isset($s['footerHorizontalOffset']) ? (int)$s['footerHorizontalOffset'] : 0,
+                isset($s['footerShowDivider']) && !$s['footerShowDivider'] ? 0 : 1,
+                isset($s['footerShowInvoiceNumber']) && !$s['footerShowInvoiceNumber'] ? 0 : 1,
+                isset($s['footerFontSize']) ? (int)$s['footerFontSize'] : 11
             ]);
         }
 
         // 2. Customers
         if (isset($body['customers']) && is_array($body['customers'])) {
-            $ids = array_filter(array_column($body['customers'], 'id'));
-            if (!empty($ids)) {
-                $inQuery = implode(',', array_fill(0, count($ids), '?'));
-                $delStmt = $pdo->prepare("DELETE FROM customers WHERE id NOT IN ($inQuery)");
-                $delStmt->execute($ids);
-            }
-            $cStmt = $pdo->prepare("
-                INSERT INTO customers (id, name, phone, email, address_line1, address_line2)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    name = VALUES(name), phone = VALUES(phone), email = VALUES(email),
-                    address_line1 = VALUES(address_line1), address_line2 = VALUES(address_line2)
-            ");
+            $cStmt = $isSqlite
+                ? $pdo->prepare("INSERT INTO customers (id, name, phone, email, address_line1, address_line2) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, phone=excluded.phone, email=excluded.email, address_line1=excluded.address_line1, address_line2=excluded.address_line2")
+                : $pdo->prepare("REPLACE INTO customers (id, name, phone, email, address_line1, address_line2) VALUES (?, ?, ?, ?, ?, ?)");
             foreach ($body['customers'] as $c) {
-                $cStmt->execute([
-                    $c['id'], $c['name'], $c['phone'] ?? '', $c['email'] ?? '',
-                    $c['addressLine1'] ?? '', $c['addressLine2'] ?? ''
-                ]);
+                if (!empty($c['id'])) {
+                    $cStmt->execute([
+                        $c['id'], $c['name'] ?? '', $c['phone'] ?? '', $c['email'] ?? '',
+                        $c['addressLine1'] ?? '', $c['addressLine2'] ?? ''
+                    ]);
+                }
             }
         }
 
         // 3. Products
         if (isset($body['products']) && is_array($body['products'])) {
-            $ids = array_filter(array_column($body['products'], 'id'));
-            if (!empty($ids)) {
-                $inQuery = implode(',', array_fill(0, count($ids), '?'));
-                $delStmt = $pdo->prepare("DELETE FROM products WHERE id NOT IN ($inQuery)");
-                $delStmt->execute($ids);
-            }
-            $pStmt = $pdo->prepare("
-                INSERT INTO products (id, code, name, price)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    code = VALUES(code), name = VALUES(name), price = VALUES(price)
-            ");
+            $pStmt = $isSqlite
+                ? $pdo->prepare("INSERT INTO products (id, code, name, brand, price) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET code=excluded.code, name=excluded.name, brand=excluded.brand, price=excluded.price")
+                : $pdo->prepare("REPLACE INTO products (id, code, name, brand, price) VALUES (?, ?, ?, ?, ?)");
             foreach ($body['products'] as $p) {
-                $pStmt->execute([
-                    $p['id'], $p['code'] ?? '', $p['name'], (float)($p['price'] ?? 0)
-                ]);
+                if (!empty($p['id'])) {
+                    $pStmt->execute([
+                        $p['id'], $p['code'] ?? '', $p['name'] ?? '', $p['brand'] ?? '', (float)($p['price'] ?? 0)
+                    ]);
+                }
             }
         }
 
-        // 4. Invoices & Items
+        // 4. Invoices & Items & Multiple Payments
         if (isset($body['invoices']) && is_array($body['invoices'])) {
-            $ids = array_filter(array_column($body['invoices'], 'id'));
-            if (!empty($ids)) {
-                $inQuery = implode(',', array_fill(0, count($ids), '?'));
-                $delStmt = $pdo->prepare("DELETE FROM invoices WHERE id NOT IN ($inQuery)");
-                $delStmt->execute($ids);
-            }
-            $invStmt = $pdo->prepare("
-                INSERT INTO invoices (
-                    id, invoice_number, customer_id, date, shipping_fee, hide_bank_details,
-                    subtotal, tax_rate, total, amount_paid, balance, status, manual_invoice_number
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    invoice_number = VALUES(invoice_number), customer_id = VALUES(customer_id),
-                    date = VALUES(date), shipping_fee = VALUES(shipping_fee),
-                    hide_bank_details = VALUES(hide_bank_details), subtotal = VALUES(subtotal),
-                    tax_rate = VALUES(tax_rate), total = VALUES(total), amount_paid = VALUES(amount_paid),
-                    balance = VALUES(balance), status = VALUES(status), manual_invoice_number = VALUES(manual_invoice_number)
-            ");
+            $invStmt = $isSqlite
+                ? $pdo->prepare("INSERT INTO invoices (id, invoice_number, customer_id, date, shipping_fee, hide_bank_details, subtotal, tax_rate, total, amount_paid, balance, status, manual_invoice_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET invoice_number=excluded.invoice_number, customer_id=excluded.customer_id, date=excluded.date, shipping_fee=excluded.shipping_fee, hide_bank_details=excluded.hide_bank_details, subtotal=excluded.subtotal, tax_rate=excluded.tax_rate, total=excluded.total, amount_paid=excluded.amount_paid, balance=excluded.balance, status=excluded.status, manual_invoice_number=excluded.manual_invoice_number")
+                : $pdo->prepare("REPLACE INTO invoices (id, invoice_number, customer_id, date, shipping_fee, hide_bank_details, subtotal, tax_rate, total, amount_paid, balance, status, manual_invoice_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            
             $delItemsStmt = $pdo->prepare("DELETE FROM invoice_items WHERE invoice_id = ?");
-            $insItemStmt = $pdo->prepare("
-                INSERT INTO invoice_items (invoice_id, product_id, description, qty, price)
-                VALUES (?, ?, ?, ?, ?)
-            ");
+            $insItemStmt = $pdo->prepare("INSERT INTO invoice_items (invoice_id, product_id, description, brand, show_brand, qty, price) VALUES (?, ?, ?, ?, ?, ?, ?)");
+
+            $delPaymentsStmt = $pdo->prepare("DELETE FROM invoice_payments WHERE invoice_id = ?");
+            $insPaymentStmt = $pdo->prepare("INSERT INTO invoice_payments (id, invoice_id, amount, date, method, note) VALUES (?, ?, ?, ?, ?, ?)");
 
             foreach ($body['invoices'] as $inv) {
+                if (empty($inv['id'])) continue;
                 $custId = !empty($inv['customerId']) ? $inv['customerId'] : null;
+
+                $totalPaid = (float)($inv['amountPaid'] ?? 0);
+                if (!empty($inv['payments']) && is_array($inv['payments'])) {
+                    $totalPaid = array_reduce($inv['payments'], function($sum, $p) {
+                        return $sum + (float)($p['amount'] ?? 0);
+                    }, 0.0);
+                }
+                $balance = (float)($inv['total'] ?? 0) - $totalPaid;
+                $status = $inv['status'] ?? 'Unpaid';
+                if ($balance <= 0 && (float)($inv['total'] ?? 0) > 0) {
+                    $status = 'Paid';
+                } elseif ($totalPaid > 0 && $balance > 0) {
+                    $status = 'Partial';
+                }
+
                 $invStmt->execute([
                     $inv['id'], $inv['invoiceNumber'], $custId, $inv['date'],
                     (float)($inv['shippingFee'] ?? 0), !empty($inv['hideBankDetails']) ? 1 : 0,
                     (float)($inv['subtotal'] ?? 0), (float)($inv['taxRate'] ?? 0),
-                    (float)($inv['total'] ?? 0), (float)($inv['amountPaid'] ?? 0),
-                    (float)($inv['balance'] ?? 0), $inv['status'] ?? 'Unpaid',
+                    (float)($inv['total'] ?? 0), $totalPaid,
+                    $balance, $status,
                     $inv['manualInvoiceNumber'] ?? ''
                 ]);
 
+                // Replace items
                 $delItemsStmt->execute([$inv['id']]);
                 if (!empty($inv['items']) && is_array($inv['items'])) {
-                    foreach ($inv['items'] as $item) {
-                        if (!empty($item['productId']) || !empty($item['description'])) {
-                            $prodId = !empty($item['productId']) ? $item['productId'] : null;
+                    foreach ($inv['items'] as $it) {
+                        if (!empty($it['productId']) || !empty($it['description'])) {
                             $insItemStmt->execute([
-                                $inv['id'], $prodId, $item['description'] ?? '',
-                                (float)($item['qty'] ?? 1), (float)($item['price'] ?? 0)
+                                $inv['id'], $it['productId'] ?: null, $it['description'] ?? '',
+                                $it['brand'] ?? '', !empty($it['showBrand']) ? 1 : 0,
+                                (float)($it['qty'] ?? 1), (float)($it['price'] ?? 0)
+                            ]);
+                        }
+                    }
+                }
+
+                // Replace multiple payments
+                $delPaymentsStmt->execute([$inv['id']]);
+                if (!empty($inv['payments']) && is_array($inv['payments'])) {
+                    foreach ($inv['payments'] as $p) {
+                        $pAmt = (float)($p['amount'] ?? 0);
+                        if ($pAmt > 0 || !empty($p['note'])) {
+                            $pId = !empty($p['id']) ? $p['id'] : ('p_' . substr(md5(uniqid()), 0, 9));
+                            $insPaymentStmt->execute([
+                                $pId, $inv['id'], $pAmt, $p['date'] ?? $inv['date'],
+                                $p['method'] ?? 'Cash', $p['note'] ?? ''
                             ]);
                         }
                     }
@@ -337,102 +547,86 @@ try {
 
         // 5. Users
         if (isset($body['users']) && is_array($body['users'])) {
-            $uStmt = $pdo->prepare("
-                INSERT INTO users (id, username, password, role)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    username = VALUES(username), password = VALUES(password), role = VALUES(role)
-            ");
+            $uStmt = $isSqlite
+                ? $pdo->prepare("INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET username=excluded.username, password=excluded.password, role=excluded.role")
+                : $pdo->prepare("REPLACE INTO users (id, username, password, role) VALUES (?, ?, ?, ?)");
             foreach ($body['users'] as $u) {
-                $uStmt->execute([
-                    $u['id'], $u['username'], $u['password'], $u['role'] ?? 'user'
-                ]);
+                if (!empty($u['id'])) {
+                    $uStmt->execute([$u['id'], $u['username'], $u['password'], $u['role'] ?? 'user']);
+                }
             }
         }
 
-        // 6. History
-        if (!empty($body['history']) && is_array($body['history'])) {
-            $hStmt = $pdo->prepare("
-                INSERT IGNORE INTO activity_history (id, action, details, user, date)
-                VALUES (?, ?, ?, ?, ?)
-            ");
-            foreach (array_slice($body['history'], 0, 10) as $h) {
-                $hStmt->execute([
-                    $h['id'], $h['action'], $h['details'] ?? '', $h['user'] ?? 'System', $h['date'] ?? date('Y-m-d H:i:s')
-                ]);
+        // 6. User Sessions
+        if (isset($body['userSessions']) && is_array($body['userSessions'])) {
+            $sStmt = $isSqlite
+                ? $pdo->prepare("INSERT INTO user_sessions (id, user_id, username, login_time, logout_time, duration_seconds, is_online, device) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET logout_time=excluded.logout_time, duration_seconds=excluded.duration_seconds, is_online=excluded.is_online")
+                : $pdo->prepare("REPLACE INTO user_sessions (id, user_id, username, login_time, logout_time, duration_seconds, is_online, device) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            foreach ($body['userSessions'] as $sess) {
+                if (!empty($sess['id'])) {
+                    $sStmt->execute([
+                        $sess['id'], $sess['userId'] ?? null, $sess['username'] ?? 'User',
+                        $sess['loginTime'] ?? date('Y-m-d H:i:s'), $sess['logoutTime'] ?? null,
+                        (int)($sess['durationSeconds'] ?? 0), !empty($sess['isOnline']) ? 1 : 0,
+                        $sess['device'] ?? 'Desktop'
+                    ]);
+                }
             }
         }
 
-        $pdo->commit();
-        echo json_encode(['success' => true, 'message' => 'Synced to MySQL database successfully']);
+        // Sync backup to database.json
+        syncToJson($body);
+
+        echo json_encode([
+            'success' => true,
+            'engine' => $engine,
+            'message' => 'Data synced and saved permanently to ' . ($engine === 'sqlite' ? 'SQLite' : 'MySQL') . ' & database.json'
+        ]);
         exit;
     }
 
-    // ----------------------------------------------------
     // Granular Endpoints
-    // ----------------------------------------------------
-    if (strpos($route, 'customers') === 0) {
-        if ($method === 'POST') {
-            $c = getJsonInput();
-            $stmt = $pdo->prepare("
-                INSERT INTO customers (id, name, phone, email, address_line1, address_line2)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    name = VALUES(name), phone = VALUES(phone), email = VALUES(email),
-                    address_line1 = VALUES(address_line1), address_line2 = VALUES(address_line2)
-            ");
-            $stmt->execute([$c['id'], $c['name'], $c['phone'] ?? '', $c['email'] ?? '', $c['addressLine1'] ?? '', $c['addressLine2'] ?? '']);
-            echo json_encode(['success' => true]);
-            exit;
-        } elseif ($method === 'DELETE') {
-            $parts = explode('/', $route);
-            $id = end($parts);
+    if (strpos($route, 'customers') === 0 && $method === 'DELETE') {
+        $parts = explode('/', $route);
+        $id = end($parts);
+        if ($pdo) {
             $stmt = $pdo->prepare("DELETE FROM customers WHERE id = ?");
             $stmt->execute([$id]);
-            echo json_encode(['success' => true, 'id' => $id]);
-            exit;
         }
+        echo json_encode(['success' => true, 'id' => $id]);
+        exit;
     }
 
-    if (strpos($route, 'products') === 0) {
-        if ($method === 'POST') {
-            $p = getJsonInput();
-            $stmt = $pdo->prepare("
-                INSERT INTO products (id, code, name, price)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    code = VALUES(code), name = VALUES(name), price = VALUES(price)
-            ");
-            $stmt->execute([$p['id'], $p['code'] ?? '', $p['name'], (float)($p['price'] ?? 0)]);
-            echo json_encode(['success' => true]);
-            exit;
-        } elseif ($method === 'DELETE') {
-            $parts = explode('/', $route);
-            $id = end($parts);
+    if (strpos($route, 'products') === 0 && $method === 'DELETE') {
+        $parts = explode('/', $route);
+        $id = end($parts);
+        if ($pdo) {
             $stmt = $pdo->prepare("DELETE FROM products WHERE id = ?");
             $stmt->execute([$id]);
-            echo json_encode(['success' => true, 'id' => $id]);
-            exit;
         }
+        echo json_encode(['success' => true, 'id' => $id]);
+        exit;
     }
 
-    if (strpos($route, 'invoices') === 0) {
-        if ($method === 'DELETE') {
-            $parts = explode('/', $route);
-            $id = end($parts);
-            $stmt = $pdo->prepare("DELETE FROM invoices WHERE id = ?");
-            $stmt->execute([$id]);
-            echo json_encode(['success' => true, 'id' => $id]);
-            exit;
+    if (strpos($route, 'invoices') === 0 && $method === 'DELETE') {
+        $parts = explode('/', $route);
+        $id = end($parts);
+        if ($pdo) {
+            try { $pdo->prepare("DELETE FROM invoice_payments WHERE invoice_id = ?")->execute([$id]); } catch (Exception $e) {}
+            try { $pdo->prepare("DELETE FROM invoice_items WHERE invoice_id = ?")->execute([$id]); } catch (Exception $e) {}
+            $pdo->prepare("DELETE FROM invoices WHERE id = ?")->execute([$id]);
         }
+        echo json_encode(['success' => true, 'id' => $id]);
+        exit;
     }
 
     http_response_code(404);
     echo json_encode(['error' => 'Endpoint not found: ' . $route]);
 } catch (Exception $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
     http_response_code(500);
-    echo json_encode(['error' => $e->getMessage()]);
+    echo json_encode([
+        'error' => $e->getMessage(),
+        'engine' => $engine,
+        'hint' => 'Database operation error. Check database permissions.'
+    ]);
 }

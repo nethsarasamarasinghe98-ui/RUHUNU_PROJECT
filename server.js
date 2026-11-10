@@ -208,7 +208,7 @@ function getAllData() {
     };
 
     // 3. Products
-    const products = db.prepare('SELECT id, code, name, price, COALESCE(brand, "") as brand FROM products ORDER BY name ASC').all();
+    const products = db.prepare("SELECT id, code, name, price, COALESCE(brand, '') as brand FROM products ORDER BY name ASC").all();
 
     // 4. Customers
     const cRows = db.prepare('SELECT id, name, phone, email, address_line1, address_line2 FROM customers ORDER BY name ASC').all();
@@ -223,7 +223,7 @@ function getAllData() {
 
     // 5. Invoices, Line Items & Multiple Payments
     const iRows = db.prepare('SELECT * FROM invoices ORDER BY date DESC').all();
-    const getItems = db.prepare('SELECT product_id, description, COALESCE(brand, "") as brand, COALESCE(show_brand, 0) as show_brand, qty, price FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC');
+    const getItems = db.prepare("SELECT product_id, description, COALESCE(brand, '') as brand, COALESCE(show_brand, 0) as show_brand, qty, price FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC");
     const getPayments = db.prepare('SELECT id, amount, date, method, note FROM invoice_payments WHERE invoice_id = ? ORDER BY date ASC, id ASC');
     const invoices = iRows.map(inv => {
         const rawItems = getItems.all(inv.id);

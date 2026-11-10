@@ -38,7 +38,7 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="styles.css?v=3.5.0">
+    <link rel="stylesheet" href="styles.css?v=3.6.0">
 </head>
 <body class="bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100 font-sans antialiased">
     <div id="app" v-cloak>
@@ -233,18 +233,18 @@
                     </div>
                     
                     <div class="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-                        <!-- Database Live Status Indicator -->
-                        <div v-if="isSaving" class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-full text-xs font-semibold">
+                        <!-- Database Live Status Indicator (Clickable for Diagnostics & Backup) -->
+                        <div v-if="isSaving" class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-full text-xs font-semibold cursor-pointer" @click="openDbModal">
                             <i class="fa-solid fa-arrows-rotate fa-spin text-xs"></i>
                             <span class="hidden sm:inline">Saving to DB...</span>
                             <span class="sm:hidden">Saving</span>
                         </div>
-                        <div v-else-if="dbConnected" class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-semibold" title="Direct instant sync to database.sqlite">
+                        <div v-else-if="dbConnected" class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-semibold cursor-pointer hover:bg-emerald-500/20 transition" @click="openDbModal" :title="'Database Active: ' + dbEngine + ' (Click for details & backups)'">
                             <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-live"></span>
                             <span class="hidden sm:inline">DB Synced</span>
                             <span class="sm:hidden">Synced</span>
                         </div>
-                        <div v-else class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-full text-xs font-semibold" title="Server offline - saving to local browser storage">
+                        <div v-else class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-full text-xs font-semibold cursor-pointer hover:bg-amber-500/20 transition" @click="openDbModal" title="Click to test database connection or export/import backups">
                             <span class="w-2 h-2 rounded-full bg-amber-500"></span>
                             <span class="hidden sm:inline">Local Cache</span>
                             <span class="sm:hidden">Cached</span>
@@ -2946,10 +2946,102 @@
                 </div>
             </div>
 
+            <!-- Database Connection & Cloud Backup Modal -->
+            <div v-if="dbModalOpen" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto backdrop-blur-sm modal-backdrop">
+                <div class="bg-white dark:bg-gray-800 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border border-gray-100 dark:border-gray-700 my-auto transform transition-all">
+                    <div class="p-5 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
+                        <div class="flex items-center gap-2.5">
+                            <div class="w-9 h-9 rounded-xl flex items-center justify-center" :class="dbConnected ? 'bg-emerald-500/10 text-emerald-600' : 'bg-amber-500/10 text-amber-600'">
+                                <i class="fa-solid fa-database text-lg"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-gray-800 dark:text-white">Database Status & Backup Center</h3>
+                                <p class="text-[11px] text-gray-500 dark:text-gray-400">Live Web & Local Persistence Manager</p>
+                            </div>
+                        </div>
+                        <button type="button" @click="closeDbModal" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition">
+                            <i class="fa-solid fa-xmark text-lg"></i>
+                        </button>
+                    </div>
+
+                    <div class="p-5 space-y-4">
+                        <!-- Status Banner -->
+                        <div class="p-3.5 rounded-xl border flex items-start gap-3" :class="dbConnected ? 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/40 text-emerald-900 dark:text-emerald-200' : 'bg-amber-50/60 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800/40 text-amber-900 dark:text-amber-200'">
+                            <div class="mt-0.5">
+                                <span class="w-2.5 h-2.5 rounded-full inline-block" :class="dbConnected ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+                            </div>
+                            <div class="text-xs flex-1">
+                                <p class="font-bold mb-0.5">{{ dbConnected ? 'Database Connected & Syncing' : 'Operating in Safe Local Storage Mode' }}</p>
+                                <p class="text-[11px] opacity-80 leading-relaxed">
+                                    {{ dbConnected ? 'All invoices, products, customers, and settings are syncing to your live database in real-time.' : 'Changes are safely stored in your browser. Use the buttons below to ping the server or backup your data.' }}
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Diagnostic details -->
+                        <div class="bg-gray-50 dark:bg-gray-900/60 p-3 rounded-xl border border-gray-200 dark:border-gray-700 space-y-2 text-xs">
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-500 dark:text-gray-400">Storage Engine:</span>
+                                <span class="font-semibold text-gray-800 dark:text-gray-200">{{ dbEngine || 'Detecting...' }}</span>
+                            </div>
+                            <div class="flex justify-between items-center" v-if="dbTestResult">
+                                <span class="text-gray-500 dark:text-gray-400">Ping Result:</span>
+                                <span class="text-[11px] font-mono text-gray-700 dark:text-gray-300">{{ dbTestResult }}</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-500 dark:text-gray-400">Total Invoices Saved:</span>
+                                <span class="font-bold text-gray-800 dark:text-gray-200">{{ invoices.length }}</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-500 dark:text-gray-400">Total Products / Customers:</span>
+                                <span class="font-semibold text-gray-800 dark:text-gray-200">{{ products.length }} products &bull; {{ customers.length }} customers</span>
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons: Test Connection & Force Save -->
+                        <div class="grid grid-cols-2 gap-2.5">
+                            <button type="button" @click="testDbConnection" :disabled="dbIsTesting" class="p-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 text-xs font-semibold flex items-center justify-center gap-2 transition">
+                                <i class="fa-solid fa-network-wired text-green-600" :class="{ 'fa-spin': dbIsTesting }"></i>
+                                <span>{{ dbIsTesting ? 'Testing...' : 'Test Server Connection' }}</span>
+                            </button>
+                            <button type="button" @click="saveData" class="p-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+                                <i class="fa-solid fa-cloud-arrow-up"></i>
+                                <span>Save / Sync Now</span>
+                            </button>
+                        </div>
+
+                        <!-- One-Click Export & Import Backup -->
+                        <div class="pt-3 border-t border-gray-100 dark:border-gray-700 space-y-2">
+                            <div class="text-xs font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
+                                <i class="fa-solid fa-shield-halved text-blue-600"></i> Offline & Cross-Device Database Backup
+                            </div>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400">Export your database as a portable file or restore your system anytime on any published domain.</p>
+                            <div class="grid grid-cols-2 gap-2.5 pt-1">
+                                <button type="button" @click="exportDatabaseBackup" class="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+                                    <i class="fa-solid fa-download"></i> Download Backup
+                                </button>
+                                <div>
+                                    <input type="file" ref="dbFileInput" @change="importDatabaseBackup" accept=".json,application/json" class="hidden">
+                                    <button type="button" @click="$refs.dbFileInput.click()" class="w-full p-2.5 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold flex items-center justify-center gap-2 transition">
+                                        <i class="fa-solid fa-upload text-blue-600"></i> Restore Backup
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="px-5 py-3 border-t border-gray-100 dark:border-gray-700 flex justify-end bg-gray-50 dark:bg-gray-800/50">
+                        <button type="button" @click="closeDbModal" class="px-4 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
     <!-- App Logic -->
-    <script src="app.js?v=3.5.0"></script>
+    <script src="app.js?v=3.6.0"></script>
 </body>
 </html>
