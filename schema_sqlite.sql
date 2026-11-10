@@ -194,7 +194,8 @@ CREATE INDEX `idx_history_date` ON `activity_history` (`date`);
 
 INSERT INTO `users` (`id`, `username`, `password`, `role`) VALUES
 ('usr_admin_001', 'admin', 'password', 'admin'),
-('usr_user_002', 'user', 'password', 'user');
+('usr_user_002', 'user', 'password', 'user'),
+('usr_admin_003', 'neths', 'password', 'admin');
 
 INSERT INTO `settings` (
     `id`, `company_name`, `logo`, `address_line1`, `address_line2`,

@@ -11,6 +11,12 @@
       "username": "user",
       "password": "password",
       "role": "user"
+    },
+    {
+      "id": "usr_admin_003",
+      "username": "neths",
+      "password": "password",
+      "role": "admin"
     }
   ],
   "settings": {
