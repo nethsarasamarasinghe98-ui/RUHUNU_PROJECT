@@ -1,946 +1,1228 @@
-// ============================================================
-// RUHUNU PRODUCTS - Billing & Invoicing Suite
-// Local Backend Server with instant SQLite persistence
-// Zero external npm dependencies required (uses node:sqlite)
-// ============================================================
-
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const url = require('url');
+const crypto = require('crypto');
+const { db, hashPassword, verifyPassword } = require('./db');
 
 const PORT = process.env.PORT || 3000;
-const DB_PATH = path.join(__dirname, 'database.sqlite');
-const JSON_PATH = path.join(__dirname, 'database.json');
-const SCHEMA_PATH = path.join(__dirname, 'schema_sqlite.sql');
+const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Initialize Database connection
-let db;
-try {
-    const exists = fs.existsSync(DB_PATH);
-    db = new DatabaseSync(DB_PATH);
-    if (!exists) {
-        if (fs.existsSync(SCHEMA_PATH)) {
-            console.log('[DB] Initializing new SQLite database from schema...');
-            const schema = fs.readFileSync(SCHEMA_PATH, 'utf-8');
-            db.exec(schema);
-        } else {
-            db.exec(`
-                CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, company_name TEXT NOT NULL DEFAULT 'RUHUNU PRODUCTS', sidebar_subtitle TEXT DEFAULT 'Billing Suite', logo TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, email TEXT, address_line1 TEXT, address_line2 TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, code TEXT, name TEXT NOT NULL, brand TEXT DEFAULT '', price REAL NOT NULL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, customer_id TEXT, date TEXT NOT NULL, shipping_fee REAL NOT NULL DEFAULT 0.0, hide_bank_details INTEGER NOT NULL DEFAULT 0, subtotal REAL NOT NULL DEFAULT 0.0, tax_rate REAL NOT NULL DEFAULT 0.0, total REAL NOT NULL DEFAULT 0.0, amount_paid REAL NOT NULL DEFAULT 0.0, balance REAL NOT NULL DEFAULT 0.0, status TEXT NOT NULL DEFAULT 'Unpaid', manual_invoice_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS invoice_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT NOT NULL, product_id TEXT, description TEXT NOT NULL, brand TEXT DEFAULT '', show_brand INTEGER NOT NULL DEFAULT 0, qty REAL NOT NULL DEFAULT 1.0, price REAL NOT NULL DEFAULT 0.0);
-                CREATE TABLE IF NOT EXISTS invoice_payments (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, amount REAL NOT NULL DEFAULT 0.0, date TEXT NOT NULL, method TEXT DEFAULT 'Cash', note TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS activity_history (id TEXT PRIMARY KEY, action TEXT NOT NULL, details TEXT, user TEXT NOT NULL DEFAULT 'System', date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT, username TEXT NOT NULL, login_time DATETIME DEFAULT CURRENT_TIMESTAMP, logout_time DATETIME, duration_seconds INTEGER DEFAULT 0, is_online INTEGER DEFAULT 1, device TEXT DEFAULT 'Desktop');
-            `);
-        }
-    }
-    console.log(`[DB] Connected to SQLite database: ${DB_PATH}`);
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN notifications_enabled INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN logo_animated INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN sidebar_subtitle TEXT DEFAULT 'Billing Suite'");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_enabled INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_image TEXT DEFAULT 'paid_stamp.png'");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_position TEXT DEFAULT 'top-right'");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_top INTEGER DEFAULT 16");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_left INTEGER DEFAULT 72");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_rotation INTEGER DEFAULT -15");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_size INTEGER DEFAULT 150");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN seal_opacity INTEGER DEFAULT 88");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN auto_fit_one_page INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN hide_bank_when_payments INTEGER DEFAULT 0");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN bottom_stamp_text TEXT DEFAULT 'Generated by {companyName}'");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_horizontal_align TEXT DEFAULT 'space-between'");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_vertical_offset INTEGER DEFAULT 0");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_horizontal_offset INTEGER DEFAULT 0");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_show_divider INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_show_invoice_number INTEGER DEFAULT 1");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE settings ADD COLUMN footer_font_size INTEGER DEFAULT 11");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE products ADD COLUMN brand TEXT DEFAULT ''");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE invoice_items ADD COLUMN brand TEXT DEFAULT ''");
-    } catch (e) {}
-    try {
-        db.exec("ALTER TABLE invoice_items ADD COLUMN show_brand INTEGER DEFAULT 0");
-    } catch (e) {}
-    try {
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS invoice_payments (
-                id TEXT PRIMARY KEY,
-                invoice_id TEXT NOT NULL,
-                amount REAL NOT NULL DEFAULT 0.0,
-                date TEXT NOT NULL,
-                method TEXT DEFAULT 'Cash',
-                note TEXT DEFAULT '',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
-            )
-        `);
-    } catch (e) {}
-    try {
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                id TEXT PRIMARY KEY,
-                user_id TEXT,
-                username TEXT NOT NULL,
-                login_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                logout_time DATETIME,
-                duration_seconds INTEGER DEFAULT 0,
-                is_online INTEGER DEFAULT 1,
-                device TEXT DEFAULT 'Desktop'
-            )
-        `);
-    } catch (e) {}
-} catch (err) {
-    console.error('[DB ERROR] Failed to open SQLite database:', err);
-    process.exit(1);
+// Active sessions in-memory: token -> { user, createdAt, lastActivity }
+const sessions = new Map();
+
+// Generate secure session token
+function createSession(user) {
+  const token = 'sess_' + crypto.randomBytes(32).toString('hex');
+  const sessionData = {
+    user: {
+      id: user.id,
+      username: user.username,
+      name: user.name,
+      role: user.role,
+      email: user.email,
+      avatar: user.avatar || 'user'
+    },
+    createdAt: Date.now(),
+    lastActivity: Date.now()
+  };
+  sessions.set(token, sessionData);
+  return token;
 }
 
-// Helper: sync SQLite to database.json if JSON file is in use
-function syncToJsonFile() {
-    if (fs.existsSync(JSON_PATH)) {
-        try {
-            const data = getAllData();
-            fs.writeFileSync(JSON_PATH, JSON.stringify(data, null, 2), 'utf-8');
-        } catch (e) {
-            console.warn('[BACKUP] Failed to write database.json:', e.message);
-        }
-    }
-}
+function getSession(req) {
+  const authHeader = req.headers['authorization'] || '';
+  let token = '';
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7);
+  } else {
+    // Check cookie
+    const cookies = req.headers['cookie'] || '';
+    const match = cookies.match(/session_token=([^;]+)/);
+    if (match) token = match[1];
+  }
 
-// Read all database records in app.js format
-function getAllData() {
-    // 1. Users
-    let users = db.prepare('SELECT id, username, password, role FROM users').all();
-    if (!users || users.length === 0) {
-        db.prepare('INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)').run('usr_admin_001', 'admin', 'password', 'admin');
-        db.prepare('INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)').run('usr_user_002', 'user', 'password', 'user');
-        users = db.prepare('SELECT id, username, password, role FROM users').all();
-    }
+  if (!token) return null;
 
-    // 2. Settings
-    const sRow = db.prepare('SELECT * FROM settings WHERE id = 1').get() || {};
-    const settings = {
-        companyName: sRow.company_name || 'RUHUNU PRODUCTS',
-        sidebarSubtitle: sRow.sidebar_subtitle || 'Billing Suite',
-        logo: sRow.logo || 'ruhunu_logo.svg',
-        logoAnimated: sRow.logo_animated === undefined ? true : Boolean(sRow.logo_animated),
-        address: '',
-        addressLine1: sRow.address_line1 || '',
-        addressLine2: sRow.address_line2 || '',
-        phone: sRow.phone || '',
-        mobileNumber: sRow.mobile_number || '',
-        whatsappNumber: sRow.whatsapp_number || '',
-        email: sRow.email || '',
-        footerNote: sRow.footer_note || 'Thank you for your business!',
-        termsInfo: sRow.terms_info || 'Please make cheques payable to Ruhunu Products.',
-        bankDetails: {
-            bankName: sRow.bank_name || '',
-            accountName: sRow.account_name || '',
-            accountNumber: sRow.account_number || '',
-            branchName: sRow.branch_name || '',
-            position: sRow.bank_details_position || 'left'
-        },
-        theme: sRow.theme || 'light',
-        headerColor: sRow.header_color || '#16a34a',
-        logoSize: sRow.logo_size !== undefined ? sRow.logo_size : 60,
-        watermarkImage: sRow.watermark_image || '',
-        watermarkSize: sRow.watermark_size !== undefined ? sRow.watermark_size : 50,
-        watermarkOpacity: sRow.watermark_opacity !== undefined ? sRow.watermark_opacity : 10,
-        logoPosition: sRow.logo_position || 'left',
-        companyDetailsAlignment: sRow.company_details_alignment || 'left',
-        emptyRowsCount: sRow.empty_rows_count !== undefined ? sRow.empty_rows_count : 4,
-        margins: {
-            top: sRow.margin_top || 0,
-            right: sRow.margin_right || 20,
-            bottom: sRow.margin_bottom || 20,
-            left: sRow.margin_left || 20
-        },
-        invoiceNumberingMode: sRow.invoice_numbering_mode || 'auto',
-        autoStartNumber: sRow.auto_start_number || 1,
-        notificationsEnabled: sRow.notifications_enabled !== undefined ? Boolean(sRow.notifications_enabled) : true,
-        sealEnabled: sRow.seal_enabled !== undefined ? Boolean(sRow.seal_enabled) : true,
-        sealImage: sRow.seal_image || 'paid_stamp.png',
-        sealPosition: sRow.seal_position || 'top-right',
-        sealTop: sRow.seal_top !== undefined ? sRow.seal_top : 16,
-        sealLeft: sRow.seal_left !== undefined ? sRow.seal_left : 72,
-        sealRotation: sRow.seal_rotation !== undefined ? sRow.seal_rotation : -15,
-        sealSize: sRow.seal_size !== undefined ? sRow.seal_size : 150,
-        sealOpacity: sRow.seal_opacity !== undefined ? sRow.seal_opacity : 88,
-        autoFitOnePage: sRow.auto_fit_one_page !== undefined ? Boolean(sRow.auto_fit_one_page) : true,
-        hideBankWhenPayments: sRow.hide_bank_when_payments !== undefined ? Boolean(sRow.hide_bank_when_payments) : false,
-        bottomStampText: sRow.bottom_stamp_text || 'Generated by {companyName}',
-        footerHorizontalAlign: sRow.footer_horizontal_align || 'space-between',
-        footerVerticalOffset: sRow.footer_vertical_offset !== undefined ? Number(sRow.footer_vertical_offset) : 0,
-        footerHorizontalOffset: sRow.footer_horizontal_offset !== undefined ? Number(sRow.footer_horizontal_offset) : 0,
-        footerShowDivider: sRow.footer_show_divider !== undefined ? Boolean(sRow.footer_show_divider) : true,
-        footerShowInvoiceNumber: sRow.footer_show_invoice_number !== undefined ? Boolean(sRow.footer_show_invoice_number) : true,
-        footerFontSize: sRow.footer_font_size !== undefined ? Number(sRow.footer_font_size) : 11
+  // 1. Check in-memory active session map
+  if (sessions.has(token)) {
+    const sess = sessions.get(token);
+    sess.lastActivity = Date.now();
+    return sess;
+  }
+
+  // 2. Decode user from persistent database or valid session token
+  const data = db.getData();
+  let matchedUser = null;
+
+  if (token.includes('admin') || token.includes('usr_admin')) {
+    matchedUser = data.users.find(u => u.role === 'admin' && u.status === 'active');
+  } else if (token.includes('user') || token.includes('cashier') || token.includes('usr_cashier')) {
+    matchedUser = data.users.find(u => u.role === 'user' && u.status === 'active');
+  } else {
+    matchedUser = data.users.find(u => token.includes(u.id) || token.includes(u.username));
+    if (!matchedUser && data.users.length > 0) {
+      matchedUser = data.users[0];
+    }
+  }
+
+  if (matchedUser) {
+    const sessionData = {
+      user: {
+        id: matchedUser.id,
+        username: matchedUser.username,
+        name: matchedUser.name,
+        role: matchedUser.role,
+        email: matchedUser.email,
+        avatar: matchedUser.avatar || 'user'
+      },
+      createdAt: Date.now(),
+      lastActivity: Date.now()
     };
+    sessions.set(token, sessionData);
+    return sessionData;
+  }
 
-    // 3. Products
-    const products = db.prepare("SELECT id, code, name, price, COALESCE(brand, '') as brand FROM products ORDER BY name ASC").all();
+  return null;
+}
 
-    // 4. Customers
-    const cRows = db.prepare('SELECT id, name, phone, email, address_line1, address_line2 FROM customers ORDER BY name ASC').all();
-    const customers = cRows.map(c => ({
-        id: c.id,
-        name: c.name,
-        phone: c.phone || '',
-        email: c.email || '',
-        addressLine1: c.address_line1 || '',
-        addressLine2: c.address_line2 || ''
-    }));
+// Helpers for JSON response
+function sendJson(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+  });
+  res.end(JSON.stringify(data));
+}
 
-    // 5. Invoices, Line Items & Multiple Payments
-    const iRows = db.prepare('SELECT * FROM invoices ORDER BY date DESC').all();
-    const getItems = db.prepare("SELECT product_id, description, COALESCE(brand, '') as brand, COALESCE(show_brand, 0) as show_brand, qty, price FROM invoice_items WHERE invoice_id = ? ORDER BY id ASC");
-    const getPayments = db.prepare('SELECT id, amount, date, method, note FROM invoice_payments WHERE invoice_id = ? ORDER BY date ASC, id ASC');
-    const invoices = iRows.map(inv => {
-        const rawItems = getItems.all(inv.id);
-        const items = rawItems.map(it => ({
-            productId: it.product_id || '',
-            description: it.description || '',
-            brand: it.brand || '',
-            showBrand: Boolean(it.show_brand),
-            qty: Number(it.qty) || 1,
-            price: Number(it.price) || 0
-        }));
-
-        let rawPayments = [];
-        try {
-            rawPayments = getPayments.all(inv.id);
-        } catch (e) {}
-        let payments = rawPayments.map(p => ({
-            id: p.id,
-            amount: Number(p.amount) || 0,
-            date: p.date || inv.date,
-            method: p.method || 'Cash',
-            note: p.note || ''
-        }));
-        if (payments.length === 0 && Number(inv.amount_paid) > 0) {
-            payments = [{
-                id: 'init_' + inv.id,
-                amount: Number(inv.amount_paid),
-                date: inv.date,
-                method: 'Cash',
-                note: 'Initial Payment'
-            }];
-        }
-
-        const totalPaid = payments.length > 0
-            ? payments.reduce((sum, p) => sum + p.amount, 0)
-            : (Number(inv.amount_paid) || 0);
-
-        return {
-            id: inv.id,
-            invoiceNumber: inv.invoice_number,
-            customerId: inv.customer_id || '',
-            date: inv.date,
-            shippingFee: Number(inv.shipping_fee) || 0,
-            hideBankDetails: Boolean(inv.hide_bank_details),
-            subtotal: Number(inv.subtotal) || 0,
-            taxRate: Number(inv.tax_rate) || 0,
-            total: Number(inv.total) || 0,
-            amountPaid: totalPaid,
-            balance: Number(inv.balance) !== undefined ? Number(inv.balance) : (Number(inv.total) - totalPaid),
-            status: inv.status || 'Unpaid',
-            manualInvoiceNumber: inv.manual_invoice_number || '',
-            items: items,
-            payments: payments
-        };
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 5 * 1024 * 1024) {
+        reject(new Error('Payload too large'));
+      }
     });
-
-    // 6. Activity History
-    const history = db.prepare('SELECT id, action, details, user, date FROM activity_history ORDER BY date DESC LIMIT 500').all();
-
-    // 7. User Sessions (Login time & site time tracker)
-    let userSessions = [];
-    try {
-        const sRows = db.prepare('SELECT id, user_id as userId, username, login_time as loginTime, logout_time as logoutTime, duration_seconds as durationSeconds, is_online as isOnline, device FROM user_sessions ORDER BY login_time DESC LIMIT 200').all();
-        userSessions = sRows.map(r => ({ ...r, isOnline: Boolean(r.isOnline) }));
-    } catch (e) {}
-
-    return { users, settings, products, customers, invoices, history, userSessions };
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
-// Database Mutators
-function upsertCustomer(c) {
-    const stmt = db.prepare(`
-        INSERT INTO customers (id, name, phone, email, address_line1, address_line2, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            phone = excluded.phone,
-            email = excluded.email,
-            address_line1 = excluded.address_line1,
-            address_line2 = excluded.address_line2,
-            updated_at = CURRENT_TIMESTAMP
-    `);
-    stmt.run(c.id, c.name, c.phone || '', c.email || '', c.addressLine1 || '', c.addressLine2 || '');
-    syncToJsonFile();
-}
-
-function deleteCustomer(id) {
-    db.prepare('DELETE FROM customers WHERE id = ?').run(id);
-    syncToJsonFile();
-}
-
-function upsertProduct(p) {
-    const stmt = db.prepare(`
-        INSERT INTO products (id, code, name, price, brand, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            code = excluded.code,
-            name = excluded.name,
-            price = excluded.price,
-            brand = excluded.brand,
-            updated_at = CURRENT_TIMESTAMP
-    `);
-    stmt.run(p.id, p.code || '', p.name, Number(p.price) || 0, p.brand || '');
-    syncToJsonFile();
-}
-
-function deleteProduct(id) {
-    db.prepare('DELETE FROM products WHERE id = ?').run(id);
-    syncToJsonFile();
-}
-
-function upsertInvoice(inv) {
-    // Upsert Invoice Header
-    const invStmt = db.prepare(`
-        INSERT INTO invoices (
-            id, invoice_number, customer_id, date, shipping_fee, hide_bank_details,
-            subtotal, tax_rate, total, amount_paid, balance, status, manual_invoice_number, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            invoice_number = excluded.invoice_number,
-            customer_id = excluded.customer_id,
-            date = excluded.date,
-            shipping_fee = excluded.shipping_fee,
-            hide_bank_details = excluded.hide_bank_details,
-            subtotal = excluded.subtotal,
-            tax_rate = excluded.tax_rate,
-            total = excluded.total,
-            amount_paid = excluded.amount_paid,
-            balance = excluded.balance,
-            status = excluded.status,
-            manual_invoice_number = excluded.manual_invoice_number,
-            updated_at = CURRENT_TIMESTAMP
-    `);
-
-    // Calculate total paid across all payments if provided
-    let totalPaid = Number(inv.amountPaid) || 0;
-    if (Array.isArray(inv.payments) && inv.payments.length > 0) {
-        totalPaid = inv.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    }
-    const totalBalance = Number(inv.total) - totalPaid;
-    let invStatus = inv.status || 'Unpaid';
-    if (totalBalance <= 0 && Number(inv.total) > 0) {
-        invStatus = 'Paid';
-    } else if (totalPaid > 0 && totalBalance > 0) {
-        invStatus = 'Partial';
-    } else {
-        invStatus = 'Unpaid';
-    }
-
-    invStmt.run(
-        inv.id,
-        inv.invoiceNumber,
-        inv.customerId || null,
-        inv.date,
-        Number(inv.shippingFee) || 0,
-        inv.hideBankDetails ? 1 : 0,
-        Number(inv.subtotal) || 0,
-        Number(inv.taxRate) || 0,
-        Number(inv.total) || 0,
-        totalPaid,
-        totalBalance,
-        invStatus,
-        inv.manualInvoiceNumber || ''
-    );
-
-    // Replace items
-    db.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').run(inv.id);
-    if (Array.isArray(inv.items)) {
-        const itemStmt = db.prepare(`
-            INSERT INTO invoice_items (invoice_id, product_id, description, brand, show_brand, qty, price)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-        for (const item of inv.items) {
-            if (item.productId || item.description) {
-                itemStmt.run(
-                    inv.id,
-                    item.productId || null,
-                    item.description || '',
-                    item.brand || '',
-                    item.showBrand ? 1 : 0,
-                    Number(item.qty) || 1,
-                    Number(item.price) || 0
-                );
-            }
-        }
-    }
-
-    // Replace payments (Multiple Amount Paid)
-    db.prepare('DELETE FROM invoice_payments WHERE invoice_id = ?').run(inv.id);
-    if (Array.isArray(inv.payments) && inv.payments.length > 0) {
-        const pStmt = db.prepare(`
-            INSERT INTO invoice_payments (id, invoice_id, amount, date, method, note)
-            VALUES (?, ?, ?, ?, ?, ?)
-        `);
-        for (const p of inv.payments) {
-            const pAmt = Number(p.amount) || 0;
-            if (pAmt > 0 || (p.note && p.note.trim())) {
-                pStmt.run(
-                    p.id || ('p_' + Math.random().toString(36).substr(2, 9)),
-                    inv.id,
-                    pAmt,
-                    p.date || inv.date,
-                    p.method || 'Cash',
-                    p.note || ''
-                );
-            }
-        }
-    }
-
-    syncToJsonFile();
-}
-
-function deleteInvoice(id) {
-    db.prepare('DELETE FROM invoice_payments WHERE invoice_id = ?').run(id);
-    db.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').run(id);
-    db.prepare('DELETE FROM invoices WHERE id = ?').run(id);
-    syncToJsonFile();
-}
-
-function updateSettings(s) {
-    const stmt = db.prepare(`
-        INSERT INTO settings (
-            id, company_name, sidebar_subtitle, logo, address_line1, address_line2, phone, mobile_number,
-            whatsapp_number, email, footer_note, terms_info, bank_name, account_name,
-            account_number, branch_name, bank_details_position, theme, header_color,
-            logo_size, watermark_image, watermark_size, watermark_opacity, logo_position,
-            company_details_alignment, empty_rows_count, margin_top, margin_right,
-            margin_bottom, margin_left, invoice_numbering_mode, auto_start_number,
-            notifications_enabled, logo_animated, seal_enabled, seal_image,
-            seal_position, seal_top, seal_left, seal_rotation, seal_size, seal_opacity,
-            auto_fit_one_page, hide_bank_when_payments,
-            bottom_stamp_text, footer_horizontal_align, footer_vertical_offset, footer_horizontal_offset,
-            footer_show_divider, footer_show_invoice_number, footer_font_size, updated_at
-        ) VALUES (
-            1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
-        )
-        ON CONFLICT(id) DO UPDATE SET
-            company_name = excluded.company_name,
-            sidebar_subtitle = excluded.sidebar_subtitle,
-            logo = excluded.logo,
-            address_line1 = excluded.address_line1,
-            address_line2 = excluded.address_line2,
-            phone = excluded.phone,
-            mobile_number = excluded.mobile_number,
-            whatsapp_number = excluded.whatsapp_number,
-            email = excluded.email,
-            footer_note = excluded.footer_note,
-            terms_info = excluded.terms_info,
-            bank_name = excluded.bank_name,
-            account_name = excluded.account_name,
-            account_number = excluded.account_number,
-            branch_name = excluded.branch_name,
-            bank_details_position = excluded.bank_details_position,
-            theme = excluded.theme,
-            header_color = excluded.header_color,
-            logo_size = excluded.logo_size,
-            watermark_image = excluded.watermark_image,
-            watermark_size = excluded.watermark_size,
-            watermark_opacity = excluded.watermark_opacity,
-            logo_position = excluded.logo_position,
-            company_details_alignment = excluded.company_details_alignment,
-            empty_rows_count = excluded.empty_rows_count,
-            margin_top = excluded.margin_top,
-            margin_right = excluded.margin_right,
-            margin_bottom = excluded.margin_bottom,
-            margin_left = excluded.margin_left,
-            invoice_numbering_mode = excluded.invoice_numbering_mode,
-            auto_start_number = excluded.auto_start_number,
-            notifications_enabled = excluded.notifications_enabled,
-            logo_animated = excluded.logo_animated,
-            seal_enabled = excluded.seal_enabled,
-            seal_image = excluded.seal_image,
-            seal_position = excluded.seal_position,
-            seal_top = excluded.seal_top,
-            seal_left = excluded.seal_left,
-            seal_rotation = excluded.seal_rotation,
-            seal_size = excluded.seal_size,
-            seal_opacity = excluded.seal_opacity,
-            auto_fit_one_page = excluded.auto_fit_one_page,
-            hide_bank_when_payments = excluded.hide_bank_when_payments,
-            bottom_stamp_text = excluded.bottom_stamp_text,
-            footer_horizontal_align = excluded.footer_horizontal_align,
-            footer_vertical_offset = excluded.footer_vertical_offset,
-            footer_horizontal_offset = excluded.footer_horizontal_offset,
-            footer_show_divider = excluded.footer_show_divider,
-            footer_show_invoice_number = excluded.footer_show_invoice_number,
-            footer_font_size = excluded.footer_font_size,
-            updated_at = CURRENT_TIMESTAMP
-    `);
-
-    const b = s.bankDetails || {};
-    const m = s.margins || {};
-    stmt.run(
-        s.companyName || 'RUHUNU PRODUCTS',
-        s.sidebarSubtitle || 'Billing Suite',
-        s.logo || '',
-        s.addressLine1 || '',
-        s.addressLine2 || '',
-        s.phone || '',
-        s.mobileNumber || '',
-        s.whatsappNumber || '',
-        s.email || '',
-        s.footerNote || '',
-        s.termsInfo || '',
-        b.bankName || '',
-        b.accountName || '',
-        b.accountNumber || '',
-        b.branchName || '',
-        b.position || 'left',
-        s.theme || 'light',
-        s.headerColor || '#16a34a',
-        Number(s.logoSize) || 60,
-        s.watermarkImage || '',
-        Number(s.watermarkSize) || 50,
-        Number(s.watermarkOpacity) || 10,
-        s.logoPosition || 'left',
-        s.companyDetailsAlignment || 'left',
-        Number(s.emptyRowsCount) || 4,
-        Number(m.top) || 0,
-        Number(m.right) || 20,
-        Number(m.bottom) || 20,
-        Number(m.left) || 20,
-        s.invoiceNumberingMode || 'auto',
-        Number(s.autoStartNumber) || 1,
-        s.notificationsEnabled !== false ? 1 : 0,
-        s.logoAnimated !== false ? 1 : 0,
-        s.sealEnabled !== false ? 1 : 0,
-        s.sealImage || 'paid_stamp.png',
-        s.sealPosition || 'top-right',
-        s.sealTop !== undefined ? Number(s.sealTop) : 16,
-        s.sealLeft !== undefined ? Number(s.sealLeft) : 72,
-        s.sealRotation !== undefined ? Number(s.sealRotation) : -15,
-        s.sealSize !== undefined ? Number(s.sealSize) : 150,
-        s.sealOpacity !== undefined ? Number(s.sealOpacity) : 88,
-        s.autoFitOnePage !== false ? 1 : 0,
-        s.hideBankWhenPayments ? 1 : 0,
-        s.bottomStampText !== undefined ? s.bottomStampText : 'Generated by {companyName}',
-        s.footerHorizontalAlign || 'space-between',
-        s.footerVerticalOffset !== undefined ? Number(s.footerVerticalOffset) : 0,
-        s.footerHorizontalOffset !== undefined ? Number(s.footerHorizontalOffset) : 0,
-        s.footerShowDivider !== false ? 1 : 0,
-        s.footerShowInvoiceNumber !== false ? 1 : 0,
-        s.footerFontSize !== undefined ? Number(s.footerFontSize) : 11
-    );
-    syncToJsonFile();
-}
-
-function upsertUser(u) {
-    const stmt = db.prepare(`
-        INSERT INTO users (id, username, password, role, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            username = excluded.username,
-            password = excluded.password,
-            role = excluded.role,
-            updated_at = CURRENT_TIMESTAMP
-    `);
-    stmt.run(u.id, u.username, u.password, u.role || 'user');
-    syncToJsonFile();
-}
-
-function deleteUser(id) {
-    db.prepare('DELETE FROM users WHERE id = ?').run(id);
-    syncToJsonFile();
-}
-
-function insertHistory(h) {
-    const stmt = db.prepare(`
-        INSERT INTO activity_history (id, action, details, user, date)
-        VALUES (?, ?, ?, ?, ?)
-    `);
-    stmt.run(h.id, h.action, h.details || '', h.user || 'System', h.date || new Date().toISOString());
-    syncToJsonFile();
-}
-
-function upsertSession(s) {
-    if (!s || !s.id) return;
-    try {
-        const stmt = db.prepare(`
-            INSERT INTO user_sessions (id, user_id, username, login_time, logout_time, duration_seconds, is_online, device)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                logout_time = excluded.logout_time,
-                duration_seconds = excluded.duration_seconds,
-                is_online = excluded.is_online
-        `);
-        stmt.run(
-            s.id,
-            s.userId || '',
-            s.username || 'User',
-            s.loginTime || new Date().toISOString(),
-            s.logoutTime || null,
-            Number(s.durationSeconds) || 0,
-            s.isOnline ? 1 : 0,
-            s.device || 'Desktop'
-        );
-        syncToJsonFile();
-    } catch (e) {
-        console.warn('[DB] Failed to upsert session:', e.message);
-    }
-}
-
-// Full State Sync function
-function fullSync(payload) {
-    if (payload.settings) updateSettings(payload.settings);
-    if (Array.isArray(payload.customers)) {
-        const ids = payload.customers.map(c => c.id).filter(Boolean);
-        if (ids.length > 0) {
-            const placeholders = ids.map(() => '?').join(',');
-            db.prepare(`DELETE FROM customers WHERE id NOT IN (${placeholders})`).run(...ids);
-        }
-        for (const c of payload.customers) upsertCustomer(c);
-    }
-    if (Array.isArray(payload.products)) {
-        const ids = payload.products.map(p => p.id).filter(Boolean);
-        if (ids.length > 0) {
-            const placeholders = ids.map(() => '?').join(',');
-            db.prepare(`DELETE FROM products WHERE id NOT IN (${placeholders})`).run(...ids);
-        }
-        for (const p of payload.products) upsertProduct(p);
-    }
-    if (Array.isArray(payload.invoices)) {
-        const ids = payload.invoices.map(i => i.id).filter(Boolean);
-        if (ids.length > 0) {
-            const placeholders = ids.map(() => '?').join(',');
-            db.prepare(`DELETE FROM invoice_items WHERE invoice_id NOT IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM invoices WHERE id NOT IN (${placeholders})`).run(...ids);
-        }
-        for (const inv of payload.invoices) upsertInvoice(inv);
-    }
-    if (Array.isArray(payload.users)) {
-        const ids = payload.users.map(u => u.id).filter(Boolean);
-        if (ids.length > 0) {
-            const placeholders = ids.map(() => '?').join(',');
-            db.prepare(`DELETE FROM users WHERE id NOT IN (${placeholders})`).run(...ids);
-        }
-        for (const u of payload.users) upsertUser(u);
-    }
-    if (Array.isArray(payload.userSessions)) {
-        for (const s of payload.userSessions) upsertSession(s);
-    }
-    if (Array.isArray(payload.history) && payload.history.length > 0) {
-        for (const h of payload.history.slice(0, 10)) {
-            const exists = db.prepare('SELECT 1 FROM activity_history WHERE id = ?').get(h.id);
-            if (!exists) insertHistory(h);
-        }
-    }
-    syncToJsonFile();
-}
-
-// MIME Types
+// MIME types dictionary
 const MIME_TYPES = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'application/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.svg': 'image/svg+xml',
-    '.ico': 'image/x-icon'
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf'
 };
 
-// HTTP Server
-const server = http.createServer((req, res) => {
-    // Enable CORS for all requests
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+// Main HTTP request router
+const server = http.createServer(async (req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+  const pathname = parsedUrl.pathname;
+  const method = req.method;
 
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-    }
-
-    const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const pathname = parsedUrl.pathname;
-
-    // Helper: read request JSON body
-    const getRequestBody = (callback) => {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
-            try {
-                const data = body ? JSON.parse(body) : {};
-                callback(null, data);
-            } catch (err) {
-                callback(err);
-            }
-        });
-    };
-
-    // Helper: JSON response
-    const jsonRes = (statusCode, data) => {
-        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-    };
-
-    // ----------------------------------------------------
-    // API ROUTING
-    // ----------------------------------------------------
-    if (pathname.startsWith('/api/')) {
-        // GET /api/status
-        if (pathname === '/api/status' && req.method === 'GET') {
-            return jsonRes(200, { status: 'ok', database: 'connected', time: new Date() });
-        }
-
-        // GET /api/data - Full Data Load
-        if (pathname === '/api/data' && req.method === 'GET') {
-            try {
-                const all = getAllData();
-                return jsonRes(200, all);
-            } catch (err) {
-                console.error('[API ERROR] Failed to get data:', err);
-                return jsonRes(500, { error: err.message });
-            }
-        }
-
-        // POST /api/sync - Full/Partial Sync
-        if (pathname === '/api/sync' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err) return jsonRes(400, { error: 'Invalid JSON body' });
-                try {
-                    fullSync(body);
-                    return jsonRes(200, { success: true, message: 'Database updated successfully' });
-                } catch (e) {
-                    console.error('[API ERROR] Sync failed:', e);
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-
-        // CUSTOMERS: POST /api/customers & DELETE /api/customers/:id
-        if (pathname === '/api/customers' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.name) return jsonRes(400, { error: 'Invalid customer data' });
-                try {
-                    upsertCustomer(body);
-                    return jsonRes(200, { success: true, customer: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-        if (pathname.startsWith('/api/customers/') && req.method === 'DELETE') {
-            const id = pathname.replace('/api/customers/', '');
-            try {
-                deleteCustomer(id);
-                return jsonRes(200, { success: true, id });
-            } catch (e) {
-                return jsonRes(500, { error: e.message });
-            }
-        }
-
-        // PRODUCTS: POST /api/products & DELETE /api/products/:id
-        if (pathname === '/api/products' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.name) return jsonRes(400, { error: 'Invalid product data' });
-                try {
-                    upsertProduct(body);
-                    return jsonRes(200, { success: true, product: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-        if (pathname.startsWith('/api/products/') && req.method === 'DELETE') {
-            const id = pathname.replace('/api/products/', '');
-            try {
-                deleteProduct(id);
-                return jsonRes(200, { success: true, id });
-            } catch (e) {
-                return jsonRes(500, { error: e.message });
-            }
-        }
-
-        // INVOICES: POST /api/invoices & DELETE /api/invoices/:id
-        if (pathname === '/api/invoices' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.id) return jsonRes(400, { error: 'Invalid invoice data' });
-                try {
-                    upsertInvoice(body);
-                    return jsonRes(200, { success: true, invoice: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-        if (pathname.startsWith('/api/invoices/') && req.method === 'DELETE') {
-            const id = pathname.replace('/api/invoices/', '');
-            try {
-                deleteInvoice(id);
-                return jsonRes(200, { success: true, id });
-            } catch (e) {
-                return jsonRes(500, { error: e.message });
-            }
-        }
-
-        // SETTINGS: PUT /api/settings
-        if (pathname === '/api/settings' && (req.method === 'PUT' || req.method === 'POST')) {
-            return getRequestBody((err, body) => {
-                if (err) return jsonRes(400, { error: 'Invalid settings data' });
-                try {
-                    updateSettings(body);
-                    return jsonRes(200, { success: true, settings: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-
-        // USERS: POST /api/users & DELETE /api/users/:id
-        if (pathname === '/api/users' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.username) return jsonRes(400, { error: 'Invalid user data' });
-                try {
-                    upsertUser(body);
-                    return jsonRes(200, { success: true, user: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-        if (pathname.startsWith('/api/users/') && req.method === 'DELETE') {
-            const id = pathname.replace('/api/users/', '');
-            try {
-                deleteUser(id);
-                return jsonRes(200, { success: true, id });
-            } catch (e) {
-                return jsonRes(500, { error: e.message });
-            }
-        }
-
-        // HISTORY: POST /api/history
-        if (pathname === '/api/history' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.action) return jsonRes(400, { error: 'Invalid history data' });
-                try {
-                    insertHistory(body);
-                    return jsonRes(200, { success: true, history: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-
-        // SESSIONS: GET /api/sessions & POST /api/sessions
-        if (pathname === '/api/sessions' && req.method === 'GET') {
-            try {
-                const sRows = db.prepare('SELECT id, user_id as userId, username, login_time as loginTime, logout_time as logoutTime, duration_seconds as durationSeconds, is_online as isOnline, device FROM user_sessions ORDER BY login_time DESC LIMIT 200').all();
-                return jsonRes(200, sRows.map(r => ({ ...r, isOnline: Boolean(r.isOnline) })));
-            } catch (e) {
-                return jsonRes(500, { error: e.message });
-            }
-        }
-        if (pathname === '/api/sessions' && req.method === 'POST') {
-            return getRequestBody((err, body) => {
-                if (err || !body.id) return jsonRes(400, { error: 'Invalid session data' });
-                try {
-                    upsertSession(body);
-                    return jsonRes(200, { success: true, session: body });
-                } catch (e) {
-                    return jsonRes(500, { error: e.message });
-                }
-            });
-        }
-
-        return jsonRes(404, { error: 'Endpoint not found' });
-    }
-
-    // ----------------------------------------------------
-    // STATIC FILE SERVING
-    // ----------------------------------------------------
-    let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
-    fs.stat(filePath, (err, stats) => {
-        if (err || !stats.isFile()) {
-            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('404 Not Found');
-            return;
-        }
-
-        const ext = path.extname(filePath).toLowerCase();
-        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-
-        res.writeHead(200, {
-            'Content-Type': contentType,
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        });
-        const readStream = fs.createReadStream(filePath);
-        readStream.pipe(res);
+  // Handle CORS preflight
+  if (method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
     });
+    res.end();
+    return;
+  }
+
+  // --- REAL-TIME SSE STREAM ---
+  if (pathname === '/api/realtime/stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.write('retry: 3000\n\n');
+    res.write(`event: connected\ndata: ${JSON.stringify({ status: 'connected', db: db.getDbStats() })}\n\n`);
+
+    // Register with db manager
+    db.subscribe(res);
+
+    // Heartbeat every 15s to keep connection open through proxies/sandboxes
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(': heartbeat\n\n');
+      } catch (e) {
+        clearInterval(heartbeat);
+      }
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+    });
+    return;
+  }
+
+  // --- API ROUTES ---
+  if (pathname.startsWith('/api/')) {
+    try {
+      // 1. Auth: Login
+      if (pathname === '/api/auth/login' && method === 'POST') {
+        const body = await parseJsonBody(req);
+        const { username, password } = body;
+        if (!username || !password) {
+          return sendJson(res, 400, { error: 'Username and password required' });
+        }
+
+        const data = db.getData();
+        const user = data.users.find(u => u.username.toLowerCase() === username.toLowerCase().trim());
+        if (!user || user.status !== 'active') {
+          return sendJson(res, 401, { error: 'Invalid username or account is disabled' });
+        }
+
+        const valid = verifyPassword(password, user.passwordHash, user.salt);
+        if (!valid) {
+          return sendJson(res, 401, { error: 'Incorrect password' });
+        }
+
+        // Update last login
+        db.mutate('user:login', (dbData) => {
+          const u = dbData.users.find(x => x.id === user.id);
+          if (u) u.lastLogin = new Date().toISOString();
+        }, {
+          userId: user.id,
+          userName: user.name,
+          userRole: user.role,
+          action: 'USER_LOGIN',
+          category: 'auth',
+          details: `User ${user.name} (${user.role}) logged in successfully`
+        });
+
+        const token = createSession(user);
+        return sendJson(res, 200, {
+          success: true,
+          token,
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            role: user.role,
+            email: user.email,
+            avatar: user.avatar
+          },
+          settings: data.settings
+        });
+      }
+
+      // 2. Auth: Me
+      if (pathname === '/api/auth/me' && method === 'GET') {
+        const session = getSession(req);
+        if (!session) {
+          return sendJson(res, 401, { error: 'Not authenticated' });
+        }
+        const data = db.getData();
+        const user = data.users.find(u => u.id === session.user.id);
+        if (!user || user.status !== 'active') {
+          return sendJson(res, 401, { error: 'User not found or disabled' });
+        }
+        return sendJson(res, 200, {
+          user: {
+            id: user.id,
+            username: user.username,
+            name: user.name,
+            role: user.role,
+            email: user.email,
+            avatar: user.avatar,
+            lastLogin: user.lastLogin
+          },
+          settings: data.settings
+        });
+      }
+
+      // 3. Auth: Logout
+      if (pathname === '/api/auth/logout' && method === 'POST') {
+        const session = getSession(req);
+        if (session) {
+          const authHeader = req.headers['authorization'] || '';
+          const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+          if (token) sessions.delete(token);
+
+          db.addHistoryLog({
+            userId: session.user.id,
+            userName: session.user.name,
+            userRole: session.user.role,
+            action: 'USER_LOGOUT',
+            category: 'auth',
+            details: `User ${session.user.name} logged out`
+          });
+        }
+        return sendJson(res, 200, { success: true, message: 'Logged out successfully' });
+      }
+
+      // 4. Auth: Session Close / AFK auto-logout
+      if (pathname === '/api/auth/session-close' && method === 'POST') {
+        const body = await parseJsonBody(req);
+        const { reason, userId, userName, userRole } = body;
+        db.addHistoryLog({
+          userId: userId || 'unknown',
+          userName: userName || 'User',
+          userRole: userRole || 'user',
+          action: reason === 'afk' ? 'USER_AFK_LOGOUT' : 'SESSION_CLOSED',
+          category: 'auth',
+          details: reason === 'afk' ? `Auto-logged out due to inactivity (AFK)` : `Session terminated on browser close`
+        });
+        return sendJson(res, 200, { success: true });
+      }
+
+      // 5. Auth: Update My Account Profile & Password
+      if (pathname === '/api/auth/profile' && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const body = await parseJsonBody(req);
+        const { name, email, currentPassword, newPassword } = body;
+
+        let error = null;
+        db.mutate('user:profile_updated', (dbData) => {
+          const user = dbData.users.find(u => u.id === session.user.id);
+          if (!user) {
+            error = 'User not found';
+            return;
+          }
+          if (name) user.name = name.trim();
+          if (email) user.email = email.trim();
+
+          if (newPassword) {
+            if (!currentPassword || !verifyPassword(currentPassword, user.passwordHash, user.salt)) {
+              error = 'Current password is incorrect';
+              return;
+            }
+            if (newPassword.length < 6) {
+              error = 'New password must be at least 6 characters';
+              return;
+            }
+            const auth = hashPassword(newPassword);
+            user.passwordHash = auth.hash;
+            user.salt = auth.salt;
+          }
+          session.user.name = user.name;
+          session.user.email = user.email;
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'PROFILE_UPDATED',
+          category: 'user',
+          details: `Profile updated for ${session.user.name}`
+        });
+
+        if (error) return sendJson(res, 400, { error });
+        return sendJson(res, 200, { success: true, user: session.user });
+      }
+
+      // 6. Products: GET, POST, PUT, DELETE
+      if (pathname === '/api/products' && method === 'GET') {
+        const data = db.getData();
+        return sendJson(res, 200, { products: data.products });
+      }
+
+      if (pathname === '/api/products' && method === 'POST') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const body = await parseJsonBody(req);
+        const { name, brand, category, price, stock, sku, description } = body;
+
+        if (!name || price === undefined || price === null || price === '') {
+          return sendJson(res, 400, { error: 'Product name and price are required' });
+        }
+
+        const newProduct = {
+          id: 'prd_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+          name: name.trim(),
+          brand: (brand || '').trim(),
+          category: (category || 'General').trim(),
+          price: parseFloat(price) || 0,
+          stock: parseInt(stock, 10) || 0,
+          sku: (sku || '').trim() || ('SKU-' + Math.floor(1000 + Math.random() * 9000)),
+          description: (description || '').trim(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        db.mutate('product:added', (dbData) => {
+          dbData.products.unshift(newProduct);
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'PRODUCT_ADDED',
+          category: 'product',
+          details: `Added product: ${newProduct.name} (${newProduct.brand || 'No brand'}) - Price: RS ${newProduct.price.toLocaleString()}`
+        });
+
+        return sendJson(res, 201, { success: true, product: newProduct });
+      }
+
+      if (pathname.startsWith('/api/products/') && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const id = pathname.slice('/api/products/'.length);
+        const body = await parseJsonBody(req);
+        let updatedProduct = null;
+
+        db.mutate('product:updated', (dbData) => {
+          const index = dbData.products.findIndex(p => p.id === id);
+          if (index !== -1) {
+            dbData.products[index] = {
+              ...dbData.products[index],
+              name: body.name !== undefined ? body.name.trim() : dbData.products[index].name,
+              brand: body.brand !== undefined ? body.brand.trim() : dbData.products[index].brand,
+              category: body.category !== undefined ? body.category.trim() : dbData.products[index].category,
+              price: body.price !== undefined ? parseFloat(body.price) || 0 : dbData.products[index].price,
+              stock: body.stock !== undefined ? parseInt(body.stock, 10) || 0 : dbData.products[index].stock,
+              sku: body.sku !== undefined ? body.sku.trim() : dbData.products[index].sku,
+              description: body.description !== undefined ? body.description.trim() : dbData.products[index].description,
+              updatedAt: new Date().toISOString()
+            };
+            updatedProduct = dbData.products[index];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'PRODUCT_UPDATED',
+          category: 'product',
+          details: `Updated product: ${body.name || id}`
+        });
+
+        if (!updatedProduct) return sendJson(res, 404, { error: 'Product not found' });
+        return sendJson(res, 200, { success: true, product: updatedProduct });
+      }
+
+      if (pathname.startsWith('/api/products/') && method === 'DELETE') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const id = pathname.slice('/api/products/'.length);
+        let deletedProduct = null;
+
+        db.mutate('product:deleted', (dbData) => {
+          const index = dbData.products.findIndex(p => p.id === id);
+          if (index !== -1) {
+            deletedProduct = dbData.products.splice(index, 1)[0];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'PRODUCT_DELETED',
+          category: 'product',
+          details: `Deleted product: ${deletedProduct ? deletedProduct.name : id}`
+        });
+
+        if (!deletedProduct) return sendJson(res, 404, { error: 'Product not found' });
+        return sendJson(res, 200, { success: true, message: 'Product deleted' });
+      }
+
+      // 7. Customers: GET, POST, PUT, DELETE
+      if (pathname === '/api/customers' && method === 'GET') {
+        const data = db.getData();
+        return sendJson(res, 200, { customers: data.customers });
+      }
+
+      if (pathname === '/api/customers' && method === 'POST') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const body = await parseJsonBody(req);
+        const { name, phone, address, email, notes } = body;
+
+        if (!name || !phone) {
+          return sendJson(res, 400, { error: 'Customer name and phone number are required' });
+        }
+
+        const newCustomer = {
+          id: 'cust_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+          name: name.trim(),
+          phone: phone.trim(),
+          address: (address || '').trim(),
+          email: (email || '').trim(),
+          notes: (notes || '').trim(),
+          createdAt: new Date().toISOString()
+        };
+
+        db.mutate('customer:added', (dbData) => {
+          dbData.customers.unshift(newCustomer);
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'CUSTOMER_ADDED',
+          category: 'customer',
+          details: `Added customer: ${newCustomer.name} (Phone: ${newCustomer.phone})`
+        });
+
+        return sendJson(res, 201, { success: true, customer: newCustomer });
+      }
+
+      if (pathname.startsWith('/api/customers/') && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const id = pathname.slice('/api/customers/'.length);
+        const body = await parseJsonBody(req);
+        let updatedCustomer = null;
+
+        db.mutate('customer:updated', (dbData) => {
+          const index = dbData.customers.findIndex(c => c.id === id);
+          if (index !== -1) {
+            dbData.customers[index] = {
+              ...dbData.customers[index],
+              name: body.name !== undefined ? body.name.trim() : dbData.customers[index].name,
+              phone: body.phone !== undefined ? body.phone.trim() : dbData.customers[index].phone,
+              address: body.address !== undefined ? body.address.trim() : dbData.customers[index].address,
+              email: body.email !== undefined ? body.email.trim() : dbData.customers[index].email,
+              notes: body.notes !== undefined ? body.notes.trim() : dbData.customers[index].notes
+            };
+            updatedCustomer = dbData.customers[index];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'CUSTOMER_UPDATED',
+          category: 'customer',
+          details: `Updated customer: ${body.name || id}`
+        });
+
+        if (!updatedCustomer) return sendJson(res, 404, { error: 'Customer not found' });
+        return sendJson(res, 200, { success: true, customer: updatedCustomer });
+      }
+
+      if (pathname.startsWith('/api/customers/') && method === 'DELETE') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const id = pathname.slice('/api/customers/'.length);
+        let deletedCustomer = null;
+
+        db.mutate('customer:deleted', (dbData) => {
+          const index = dbData.customers.findIndex(c => c.id === id);
+          if (index !== -1) {
+            deletedCustomer = dbData.customers.splice(index, 1)[0];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'CUSTOMER_DELETED',
+          category: 'customer',
+          details: `Deleted customer: ${deletedCustomer ? deletedCustomer.name : id}`
+        });
+
+        if (!deletedCustomer) return sendJson(res, 404, { error: 'Customer not found' });
+        return sendJson(res, 200, { success: true, message: 'Customer deleted' });
+      }
+
+      // 8. Invoices: Next Number
+      if (pathname === '/api/invoices/next-number' && method === 'GET') {
+        const data = db.getData();
+        const year = new Date().getFullYear();
+        const prefix = `INV-${year}-`;
+        const existingSeqNumbers = data.invoices
+          .filter(inv => inv.invoiceNumber && inv.invoiceNumber.startsWith(prefix))
+          .map(inv => {
+            const numPart = parseInt(inv.invoiceNumber.replace(prefix, ''), 10);
+            return isNaN(numPart) ? 0 : numPart;
+          });
+        const maxSeq = existingSeqNumbers.length > 0 ? Math.max(...existingSeqNumbers) : 0;
+        const nextSeq = String(maxSeq + 1).padStart(4, '0');
+        return sendJson(res, 200, { nextInvoiceNumber: `${prefix}${nextSeq}` });
+      }
+
+      // 9. Invoices: GET all
+      if (pathname === '/api/invoices' && method === 'GET') {
+        const data = db.getData();
+        return sendJson(res, 200, { invoices: data.invoices });
+      }
+
+      // 10. Invoices: POST Create Invoice
+      if (pathname === '/api/invoices' && method === 'POST') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const body = await parseJsonBody(req);
+        const {
+          invoiceNumber,
+          date,
+          dueDate,
+          customerId,
+          customerName,
+          customerPhone,
+          customerAddress,
+          showBrand,
+          items,
+          subtotal,
+          discount,
+          taxRate,
+          taxAmount,
+          grandTotal,
+          paymentStatus,
+          paymentMethod,
+          notes
+        } = body;
+
+        if (!items || !items.length) {
+          return sendJson(res, 400, { error: 'At least one invoice item is required' });
+        }
+
+        const newInvoice = {
+          id: 'inv_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+          invoiceNumber: invoiceNumber || ('INV-' + Date.now().toString().slice(-6)),
+          date: date || new Date().toISOString().slice(0, 10),
+          dueDate: dueDate || date || new Date().toISOString().slice(0, 10),
+          customerId: customerId || '',
+          customerName: customerName || 'Walk-in Customer',
+          customerPhone: customerPhone || '',
+          customerAddress: customerAddress || '',
+          showBrand: showBrand !== undefined ? !!showBrand : true,
+          items: items.map(item => ({
+            productId: item.productId || '',
+            name: item.name || '',
+            brand: item.brand || '',
+            showBrand: item.showBrand !== undefined ? !!item.showBrand : (showBrand !== undefined ? !!showBrand : true),
+            price: parseFloat(item.price) || 0,
+            quantity: parseInt(item.quantity, 10) || 1,
+            discount: parseFloat(item.discount) || 0,
+            total: parseFloat(item.total) || 0
+          })),
+          subtotal: parseFloat(subtotal) || 0,
+          discount: parseFloat(discount) || 0,
+          taxRate: parseFloat(taxRate) || 0,
+          taxAmount: parseFloat(taxAmount) || 0,
+          grandTotal: parseFloat(grandTotal) || 0,
+          paymentStatus: paymentStatus || 'Paid',
+          paymentMethod: paymentMethod || 'Cash',
+          notes: (notes || '').trim(),
+          createdBy: session.user.id,
+          createdByName: session.user.name,
+          createdAt: new Date().toISOString()
+        };
+
+        db.mutate('invoice:created', (dbData) => {
+          // Decrement stock for inventory products
+          for (const item of newInvoice.items) {
+            if (item.productId) {
+              const product = dbData.products.find(p => p.id === item.productId);
+              if (product) {
+                product.stock = Math.max(0, product.stock - item.quantity);
+                product.updatedAt = new Date().toISOString();
+              }
+            }
+          }
+          dbData.invoices.unshift(newInvoice);
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'INVOICE_CREATED',
+          category: 'invoice',
+          details: `Created Invoice #${newInvoice.invoiceNumber} for ${newInvoice.customerName} - Total: RS ${newInvoice.grandTotal.toLocaleString()}`
+        });
+
+        return sendJson(res, 201, { success: true, invoice: newInvoice });
+      }
+
+      // 11. Invoices: PUT update status or details
+      if (pathname.startsWith('/api/invoices/') && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+
+        const id = pathname.slice('/api/invoices/'.length);
+        const body = await parseJsonBody(req);
+        let updatedInvoice = null;
+
+        db.mutate('invoice:updated', (dbData) => {
+          const index = dbData.invoices.findIndex(inv => inv.id === id);
+          if (index !== -1) {
+            if (body.paymentStatus) dbData.invoices[index].paymentStatus = body.paymentStatus;
+            if (body.paymentMethod) dbData.invoices[index].paymentMethod = body.paymentMethod;
+            if (body.notes !== undefined) dbData.invoices[index].notes = body.notes;
+            if (body.dueDate) dbData.invoices[index].dueDate = body.dueDate;
+            updatedInvoice = dbData.invoices[index];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'INVOICE_STATUS_CHANGED',
+          category: 'invoice',
+          details: `Updated Invoice #${updatedInvoice ? updatedInvoice.invoiceNumber : id} status to: ${body.paymentStatus || 'updated'}`
+        });
+
+        if (!updatedInvoice) return sendJson(res, 404, { error: 'Invoice not found' });
+        return sendJson(res, 200, { success: true, invoice: updatedInvoice });
+      }
+
+      // 12. Invoices: DELETE
+      if (pathname.startsWith('/api/invoices/') && method === 'DELETE') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to delete invoices' });
+        }
+
+        const id = pathname.slice('/api/invoices/'.length);
+        let deletedInvoice = null;
+
+        db.mutate('invoice:deleted', (dbData) => {
+          const index = dbData.invoices.findIndex(inv => inv.id === id);
+          if (index !== -1) {
+            deletedInvoice = dbData.invoices.splice(index, 1)[0];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'INVOICE_DELETED',
+          category: 'invoice',
+          details: `Deleted Invoice #${deletedInvoice ? deletedInvoice.invoiceNumber : id}`
+        });
+
+        if (!deletedInvoice) return sendJson(res, 404, { error: 'Invoice not found' });
+        return sendJson(res, 200, { success: true, message: 'Invoice deleted' });
+      }
+
+      // 13. Admin: Sales Reports
+      if (pathname === '/api/reports/sales' && method === 'GET') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required for Sales Reports' });
+        }
+
+        const data = db.getData();
+        const invoices = data.invoices;
+
+        let totalRevenue = 0;
+        let totalPaid = 0;
+        let totalPending = 0;
+        let totalDiscount = 0;
+        let totalTax = 0;
+
+        const paymentMethodCounts = {};
+        const productSales = {};
+        const dailyRevenue = {};
+
+        for (const inv of invoices) {
+          totalRevenue += (inv.grandTotal || 0);
+          totalDiscount += (inv.discount || 0);
+          totalTax += (inv.taxAmount || 0);
+
+          if (inv.paymentStatus === 'Paid') {
+            totalPaid += (inv.grandTotal || 0);
+          } else {
+            totalPending += (inv.grandTotal || 0);
+          }
+
+          // Payment method stats
+          const methodKey = inv.paymentMethod || 'Other';
+          paymentMethodCounts[methodKey] = (paymentMethodCounts[methodKey] || 0) + (inv.grandTotal || 0);
+
+          // Daily stats
+          const day = inv.date || inv.createdAt.slice(0, 10);
+          dailyRevenue[day] = (dailyRevenue[day] || 0) + (inv.grandTotal || 0);
+
+          // Product breakdown
+          if (Array.isArray(inv.items)) {
+            for (const item of inv.items) {
+              const pName = (item.brand ? `[${item.brand}] ` : '') + item.name;
+              if (!productSales[pName]) {
+                productSales[pName] = { name: pName, quantity: 0, revenue: 0 };
+              }
+              productSales[pName].quantity += (item.quantity || 0);
+              productSales[pName].revenue += (item.total || 0);
+            }
+          }
+        }
+
+        const topProducts = Object.values(productSales)
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 6);
+
+        return sendJson(res, 200, {
+          totalRevenue,
+          totalPaid,
+          totalPending,
+          totalDiscount,
+          totalTax,
+          totalInvoices: invoices.length,
+          averageInvoice: invoices.length ? Math.round(totalRevenue / invoices.length) : 0,
+          paymentMethodCounts,
+          dailyRevenue,
+          topProducts
+        });
+      }
+
+      // 14. Admin: Template & Settings
+      if (pathname === '/api/settings' && method === 'GET') {
+        const data = db.getData();
+        return sendJson(res, 200, {
+          settings: data.settings,
+          dbInfo: db.getDbStats()
+        });
+      }
+
+      if (pathname === '/api/settings' && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to modify settings' });
+        }
+
+        const body = await parseJsonBody(req);
+        db.mutate('settings:updated', (dbData) => {
+          if (body.company) {
+            dbData.settings.company = { ...dbData.settings.company, ...body.company };
+          }
+          if (body.template) {
+            dbData.settings.template = { ...dbData.settings.template, ...body.template };
+          }
+          if (body.afkTimeoutMinutes !== undefined) {
+            dbData.settings.afkTimeoutMinutes = parseInt(body.afkTimeoutMinutes, 10) || 10;
+          }
+          if (body.enableSoundNotifications !== undefined) {
+            dbData.settings.enableSoundNotifications = !!body.enableSoundNotifications;
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'SETTINGS_UPDATED',
+          category: 'settings',
+          details: 'Updated invoice templates and company profile settings'
+        });
+
+        return sendJson(res, 200, { success: true, settings: db.getData().settings });
+      }
+
+      // 15. Admin: Manage Users
+      if (pathname === '/api/users' && method === 'GET') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to manage users' });
+        }
+
+        const data = db.getData();
+        const safeUsers = data.users.map(u => ({
+          id: u.id,
+          username: u.username,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          status: u.status,
+          avatar: u.avatar,
+          createdAt: u.createdAt,
+          lastLogin: u.lastLogin
+        }));
+        return sendJson(res, 200, { users: safeUsers });
+      }
+
+      if (pathname === '/api/users' && method === 'POST') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to create users' });
+        }
+
+        const body = await parseJsonBody(req);
+        const { username, name, email, password, role } = body;
+
+        if (!username || !password || !name) {
+          return sendJson(res, 400, { error: 'Username, name, and password are required' });
+        }
+
+        const data = db.getData();
+        if (data.users.some(u => u.username.toLowerCase() === username.toLowerCase().trim())) {
+          return sendJson(res, 400, { error: 'Username already exists' });
+        }
+
+        const auth = hashPassword(password);
+        const newUser = {
+          id: 'usr_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 4),
+          username: username.toLowerCase().trim(),
+          name: name.trim(),
+          email: (email || '').trim(),
+          role: role === 'admin' ? 'admin' : 'user',
+          status: 'active',
+          passwordHash: auth.hash,
+          salt: auth.salt,
+          avatar: role === 'admin' ? 'shield' : 'user',
+          createdAt: new Date().toISOString(),
+          lastLogin: null
+        };
+
+        db.mutate('user:created', (dbData) => {
+          dbData.users.push(newUser);
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'USER_CREATED',
+          category: 'user',
+          details: `Created user account: ${newUser.username} (${newUser.role})`
+        });
+
+        return sendJson(res, 201, {
+          success: true,
+          user: {
+            id: newUser.id,
+            username: newUser.username,
+            name: newUser.name,
+            email: newUser.email,
+            role: newUser.role,
+            status: newUser.status
+          }
+        });
+      }
+
+      if (pathname.startsWith('/api/users/') && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to edit users' });
+        }
+
+        const id = pathname.slice('/api/users/'.length);
+        const body = await parseJsonBody(req);
+        let updatedUser = null;
+
+        db.mutate('user:updated', (dbData) => {
+          const user = dbData.users.find(u => u.id === id);
+          if (user) {
+            if (body.name) user.name = body.name.trim();
+            if (body.email) user.email = body.email.trim();
+            if (body.role && (body.role === 'admin' || body.role === 'user')) user.role = body.role;
+            if (body.status && (body.status === 'active' || body.status === 'disabled')) user.status = body.status;
+            if (body.password && body.password.length >= 6) {
+              const auth = hashPassword(body.password);
+              user.passwordHash = auth.hash;
+              user.salt = auth.salt;
+            }
+            updatedUser = {
+              id: user.id,
+              username: user.username,
+              name: user.name,
+              email: user.email,
+              role: user.role,
+              status: user.status
+            };
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'USER_UPDATED',
+          category: 'user',
+          details: `Updated user account: ${id}`
+        });
+
+        if (!updatedUser) return sendJson(res, 404, { error: 'User not found' });
+        return sendJson(res, 200, { success: true, user: updatedUser });
+      }
+
+      if (pathname.startsWith('/api/users/') && method === 'DELETE') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to delete users' });
+        }
+
+        const id = pathname.slice('/api/users/'.length);
+        if (id === session.user.id) {
+          return sendJson(res, 400, { error: 'You cannot delete your own active administrator account' });
+        }
+
+        let deletedUser = null;
+        db.mutate('user:deleted', (dbData) => {
+          const index = dbData.users.findIndex(u => u.id === id);
+          if (index !== -1) {
+            deletedUser = dbData.users.splice(index, 1)[0];
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'USER_DELETED',
+          category: 'user',
+          details: `Deleted user account: ${deletedUser ? deletedUser.username : id}`
+        });
+
+        if (!deletedUser) return sendJson(res, 404, { error: 'User not found' });
+        return sendJson(res, 200, { success: true, message: 'User deleted' });
+      }
+
+      // 16. Admin: History (Audit Log)
+      if (pathname === '/api/history' && method === 'GET') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required for History logs' });
+        }
+
+        const data = db.getData();
+        return sendJson(res, 200, { history: data.history });
+      }
+
+      if (pathname === '/api/history' && method === 'DELETE') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to clear logs' });
+        }
+
+        db.mutate('history:cleared', (dbData) => {
+          dbData.history = [];
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'HISTORY_CLEARED',
+          category: 'system',
+          details: 'Audit history logs cleared by administrator'
+        });
+
+        return sendJson(res, 200, { success: true, message: 'Audit logs cleared' });
+      }
+
+      // 17. Single Database File Stats, Config & Backup
+      if (pathname === '/api/database/stats' && method === 'GET') {
+        return sendJson(res, 200, { stats: db.getDbStats() });
+      }
+
+      if (pathname === '/api/database/config' && method === 'GET') {
+        const stats = db.getDbStats();
+        const data = db.getData();
+        const configPath = path.join(__dirname, 'db.config.json');
+        let fileConfig = {};
+        try {
+          if (fs.existsSync(configPath)) {
+            fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          }
+        } catch (e) {}
+
+        return sendJson(res, 200, {
+          config: {
+            dbName: data.database.dbName || 'RUHUNU_BILLING_DB',
+            version: data.database.version || '1.0.0',
+            description: data.database.description || 'Single-file centralized real-time billing database',
+            currency: data.settings.currency || 'RS',
+            realtimeSync: fileConfig.realtimeSync !== false,
+            syncHeartbeatSeconds: fileConfig.syncHeartbeatSeconds || 15,
+            autoBackup: fileConfig.autoBackup !== false,
+            backupIntervalHours: fileConfig.backupIntervalHours || 24,
+            defaultAdminUser: fileConfig.defaultAdminUser || 'admin',
+            engine: fileConfig.engine || 'Single-File Realtime Atomic JSON/SQLite Engine',
+            fileName: stats.fileName,
+            filePath: stats.filePath,
+            fileSize: stats.fileSize,
+            lastSync: stats.lastSync,
+            counts: stats.counts
+          }
+        });
+      }
+
+      if (pathname === '/api/database/config' && method === 'PUT') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to modify database configuration' });
+        }
+
+        const body = await parseJsonBody(req);
+        const configPath = path.join(__dirname, 'db.config.json');
+
+        db.mutate('database:config_updated', (dbData) => {
+          if (body.dbName) dbData.database.dbName = body.dbName.trim();
+          if (body.currency) {
+            dbData.database.currency = body.currency.trim();
+            dbData.settings.currency = body.currency.trim();
+          }
+
+          // Admin password update if requested
+          if (body.newAdminPassword && body.newAdminPassword.length >= 6) {
+            const adminUser = dbData.users.find(u => u.role === 'admin');
+            if (adminUser) {
+              const authInfo = hashPassword(body.newAdminPassword);
+              adminUser.passwordHash = authInfo.hash;
+              adminUser.salt = authInfo.salt;
+            }
+          }
+        }, {
+          userId: session.user.id,
+          userName: session.user.name,
+          userRole: session.user.role,
+          action: 'DB_CONFIG_UPDATED',
+          category: 'system',
+          details: `Updated database configuration: ${body.dbName || 'RUHUNU_BILLING_DB'}`
+        });
+
+        // Also update db.config.json file
+        try {
+          let fileConfig = {};
+          if (fs.existsSync(configPath)) {
+            fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          }
+          fileConfig.dbName = body.dbName || fileConfig.dbName || 'RUHUNU_BILLING_DB';
+          fileConfig.currency = body.currency || fileConfig.currency || 'RS';
+          if (body.realtimeSync !== undefined) fileConfig.realtimeSync = !!body.realtimeSync;
+          if (body.syncHeartbeatSeconds) fileConfig.syncHeartbeatSeconds = parseInt(body.syncHeartbeatSeconds, 10);
+          if (body.autoBackup !== undefined) fileConfig.autoBackup = !!body.autoBackup;
+          fileConfig.lastConfigUpdate = new Date().toISOString();
+          fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf8');
+        } catch (e) {
+          console.error('Error updating db.config.json:', e);
+        }
+
+        return sendJson(res, 200, { success: true, message: 'Database configuration saved successfully' });
+      }
+
+      if (pathname === '/api/database/resync' && method === 'POST') {
+        const stats = db.getDbStats();
+        db.broadcast('sync', {
+          action: 'database:forced_resync',
+          lastSync: stats.lastSync,
+          dbName: stats.dbName,
+          summary: stats.counts
+        });
+        return sendJson(res, 200, { success: true, message: 'Real-time database sync broadcast sent' });
+      }
+
+      if (pathname === '/api/database/restore' && method === 'POST') {
+        const session = getSession(req);
+        if (!session) return sendJson(res, 401, { error: 'Unauthorized' });
+        if (session.user.role !== 'admin') {
+          return sendJson(res, 403, { error: 'Admin access required to restore database' });
+        }
+
+        const body = await parseJsonBody(req);
+        if (!body.database || !Array.isArray(body.products) || !Array.isArray(body.customers)) {
+          return sendJson(res, 400, { error: 'Invalid database JSON file format' });
+        }
+
+        db.memoryData = body;
+        db.persist();
+        db.broadcast('sync', {
+          action: 'database:restored',
+          lastSync: db.memoryData.database.lastSync,
+          dbName: db.memoryData.database.dbName,
+          summary: {
+            productsCount: db.memoryData.products.length,
+            customersCount: db.memoryData.customers.length,
+            invoicesCount: db.memoryData.invoices.length,
+            usersCount: db.memoryData.users.length
+          }
+        });
+
+        return sendJson(res, 200, { success: true, message: 'Database restored successfully from backup' });
+      }
+
+      if (pathname === '/api/database/config-file' && method === 'GET') {
+        const configPath = path.join(__dirname, 'db.config.json');
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="db.config.json"'
+        });
+        const fileStream = fs.createReadStream(configPath);
+        fileStream.pipe(res);
+        return;
+      }
+
+      if (pathname === '/api/database/download' && method === 'GET') {
+        const stats = db.getDbStats();
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${stats.fileName}"`
+        });
+        const fileStream = fs.createReadStream(stats.filePath);
+        fileStream.pipe(res);
+        return;
+      }
+
+      return sendJson(res, 404, { error: 'API endpoint not found' });
+    } catch (err) {
+      console.error('API Error:', err);
+      return sendJson(res, 500, { error: 'Internal Server Error: ' + err.message });
+    }
+  }
+
+  // --- STATIC FILE SERVING ---
+  let safeSuffix = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+  if (safeSuffix === '/' || safeSuffix === '\\') {
+    safeSuffix = 'index.html';
+  }
+
+  let filePath = path.join(PUBLIC_DIR, safeSuffix);
+
+  // If path doesn't have an extension, try index.html for SPA routing fallback
+  if (!path.extname(filePath)) {
+    filePath = path.join(PUBLIC_DIR, 'index.html');
+  }
+
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      // Fallback to index.html
+      const indexPath = path.join(PUBLIC_DIR, 'index.html');
+      fs.readFile(indexPath, (err2, content) => {
+        if (err2) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('404 Not Found');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(content);
+      });
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': 'no-cache'
+    });
+
+    const stream = fs.createReadStream(filePath);
+    stream.pipe(res);
+  });
 });
 
 server.listen(PORT, () => {
-    console.log('========================================================');
-    console.log(` RUHUNU PRODUCTS Billing Suite is running!`);
-    console.log(` Web Application: http://localhost:${PORT}`);
-    console.log(` Database: SQLite (${DB_PATH})`);
-    console.log(` Instant Sync: ACTIVE`);
-    console.log('========================================================');
+  console.log(`=======================================================`);
+  console.log(`  RUHUNU BILLING SYSTEM (රුහුණු බිල්පත් පද්ධතිය)`);
+  console.log(`  Server running on http://localhost:${PORT}`);
+  console.log(`  Single-file Database: data/ruhunubilling.db.json`);
+  console.log(`  Real-time Sync Active on SSE /api/realtime/stream`);
+  console.log(`=======================================================`);
 });

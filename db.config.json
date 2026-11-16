@@ -1,0 +1,17 @@
+{
+  "dbName": "RUHUNU_BILLING_DB",
+  "version": "1.0.0",
+  "description": "Single-file centralized real-time billing database",
+  "dbFile": "data/ruhunubilling.db.json",
+  "host": "localhost",
+  "port": 3000,
+  "engine": "Single-File Realtime Atomic JSON/SQLite Engine",
+  "currency": "RS",
+  "realtimeSync": true,
+  "syncHeartbeatSeconds": 15,
+  "autoBackup": true,
+  "backupIntervalHours": 24,
+  "defaultAdminUser": "admin",
+  "createdAt": "2026-11-16T03:37:03.384Z",
+  "lastConfigUpdate": "2026-11-16T10:15:00.000Z"
+}

@@ -1,26 +1,21 @@
 {
-  "name": "ruhunu-products-billing-suite",
-  "version": "3.5.0",
-  "description": "RUHUNU PRODUCTS Billing Suite - Invoicing, Inventory & Accounts System",
+  "name": "ruhunu-billing-system",
+  "version": "1.0.0",
+  "description": "Next-Generation Responsive Real-time Billing System with Single File Database and Sinhala/English Support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "pg": "^8.11.3"
-  },
   "keywords": [
     "billing",
     "invoicing",
-    "sqlite",
-    "postgres",
-    "accounting",
-    "vercel"
+    "point-of-sale",
+    "realtime",
+    "sinhala",
+    "sri-lanka",
+    "database"
   ],
-  "author": "Ruhunu Products",
+  "author": "Antigravity",
   "license": "ISC"
 }
