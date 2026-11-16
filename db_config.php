@@ -9,11 +9,16 @@ define('DB_SQLITE_PATH', __DIR__ . '/database.sqlite');
 define('DB_JSON_PATH',   __DIR__ . '/database.json');
 define('DB_SCHEMA_PATH', __DIR__ . '/schema_sqlite.sql');
 
-// Optional MySQL configuration (Leave DB_NAME empty to use SQLite automatically with zero setup)
+// ============================================================
+// MySQL Database Configuration (Matches database.sql)
+// ============================================================
+// To use MySQL / MariaDB (via phpMyAdmin / cPanel / XAMPP):
+// Set DB_NAME to 'ruhunu_products_db'.
+// If DB_NAME is left empty (''), the system automatically uses SQLite (database.sqlite) with zero setup!
 define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_NAME', getenv('DB_NAME') ?: '');          // Empty = uses database.sqlite out of the box!
-define('DB_USER', getenv('DB_USER') ?: 'root');
-define('DB_PASS', getenv('DB_PASS') ?: '');
+define('DB_NAME', getenv('DB_NAME') ?: '');          // Set to 'ruhunu_products_db' to activate MySQL
+define('DB_USER', getenv('DB_USER') ?: 'root');      // 'root' or 'billing_user'
+define('DB_PASS', getenv('DB_PASS') ?: '');          // '' (blank) or 'BillingPass@2026'
 define('DB_CHARSET', 'utf8mb4');
 
 function getDbEngine() {
@@ -78,9 +83,23 @@ function getDbConnection() {
             ]);
             $pdo->exec("PRAGMA foreign_keys = ON;");
             
-            if (!$exists && file_exists(DB_SCHEMA_PATH)) {
-                $schema = file_get_contents(DB_SCHEMA_PATH);
-                $pdo->exec($schema);
+            if (!$exists) {
+                if (file_exists(DB_SCHEMA_PATH)) {
+                    $schema = file_get_contents(DB_SCHEMA_PATH);
+                    $pdo->exec($schema);
+                } else {
+                    $pdo->exec("
+                        CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, company_name TEXT NOT NULL DEFAULT 'RUHUNU PRODUCTS', sidebar_subtitle TEXT DEFAULT 'Billing Suite', logo TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, email TEXT, address_line1 TEXT, address_line2 TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, code TEXT, name TEXT NOT NULL, brand TEXT DEFAULT '', price REAL NOT NULL DEFAULT 0.0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, customer_id TEXT, date TEXT NOT NULL, shipping_fee REAL NOT NULL DEFAULT 0.0, hide_bank_details INTEGER NOT NULL DEFAULT 0, subtotal REAL NOT NULL DEFAULT 0.0, tax_rate REAL NOT NULL DEFAULT 0.0, total REAL NOT NULL DEFAULT 0.0, amount_paid REAL NOT NULL DEFAULT 0.0, balance REAL NOT NULL DEFAULT 0.0, status TEXT NOT NULL DEFAULT 'Unpaid', manual_invoice_number TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS invoice_items (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id TEXT NOT NULL, product_id TEXT, description TEXT NOT NULL, brand TEXT DEFAULT '', show_brand INTEGER NOT NULL DEFAULT 0, qty REAL NOT NULL DEFAULT 1.0, price REAL NOT NULL DEFAULT 0.0);
+                        CREATE TABLE IF NOT EXISTS invoice_payments (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, amount REAL NOT NULL DEFAULT 0.0, date TEXT NOT NULL, method TEXT DEFAULT 'Cash', note TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS activity_history (id TEXT PRIMARY KEY, action TEXT NOT NULL, details TEXT, user TEXT NOT NULL DEFAULT 'System', date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                        CREATE TABLE IF NOT EXISTS user_sessions (id TEXT PRIMARY KEY, user_id TEXT, username TEXT NOT NULL, login_time DATETIME DEFAULT CURRENT_TIMESTAMP, logout_time DATETIME, duration_seconds INTEGER DEFAULT 0, is_online INTEGER DEFAULT 1, device TEXT DEFAULT 'Desktop');
+                    ");
+                }
             }
 
             // Auto-migrate all required columns and tables if missing
