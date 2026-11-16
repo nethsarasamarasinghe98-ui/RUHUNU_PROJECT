@@ -1,0 +1,39 @@
+{
+  "database": {
+    "engine": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "name": "ruhunu_products_db",
+    "user": "root",
+    "password": "",
+    "charset": "utf8mb4"
+  },
+  "dedicated_user": {
+    "user": "billing_user",
+    "password": "BillingPass@2026",
+    "permissions": "ALL PRIVILEGES"
+  },
+  "cloud_postgres": {
+    "url": ""
+  },
+  "application_users": [
+    {
+      "username": "admin",
+      "password": "password",
+      "role": "admin",
+      "description": "Full System Administrator"
+    },
+    {
+      "username": "neths",
+      "password": "password",
+      "role": "admin",
+      "description": "Personal Administrator"
+    },
+    {
+      "username": "user",
+      "password": "password",
+      "role": "user",
+      "description": "Staff Invoicing Account"
+    }
+  ]
+}

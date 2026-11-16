@@ -9,17 +9,34 @@ define('DB_SQLITE_PATH', __DIR__ . '/database.sqlite');
 define('DB_JSON_PATH',   __DIR__ . '/database.json');
 define('DB_SCHEMA_PATH', __DIR__ . '/schema_sqlite.sql');
 
+// Auto-load .env file if present
+if (file_exists(__DIR__ . '/.env')) {
+    $envLines = @file(__DIR__ . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if ($envLines) {
+        foreach ($envLines as $line) {
+            $line = trim($line);
+            if ($line === '' || $line[0] === '#') continue;
+            if (strpos($line, '=') !== false) {
+                list($envKey, $envVal) = explode('=', $line, 2);
+                $envKey = trim($envKey);
+                $envVal = trim($envVal, " \t\n\r\0\x0B\"'");
+                if (getenv($envKey) === false) {
+                    putenv("$envKey=$envVal");
+                    $_ENV[$envKey] = $envVal;
+                }
+            }
+        }
+    }
+}
+
 // ============================================================
 // MySQL Database Configuration (Matches database.sql)
 // ============================================================
-// To use MySQL / MariaDB (via phpMyAdmin / cPanel / XAMPP):
-// Set DB_NAME to 'ruhunu_products_db'.
-// If DB_NAME is left empty (''), the system automatically uses SQLite (database.sqlite) with zero setup!
 define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
-define('DB_NAME', getenv('DB_NAME') ?: '');          // Set to 'ruhunu_products_db' to activate MySQL
-define('DB_USER', getenv('DB_USER') ?: 'root');      // 'root' or 'billing_user'
-define('DB_PASS', getenv('DB_PASS') ?: '');          // '' (blank) or 'BillingPass@2026'
-define('DB_CHARSET', 'utf8mb4');
+define('DB_NAME', getenv('DB_NAME') ?: 'ruhunu_products_db');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') !== false ? getenv('DB_PASS') : '');
+define('DB_CHARSET', getenv('DB_CHARSET') ?: 'utf8mb4');
 
 function getDbEngine() {
     static $engine = null;
